@@ -52,6 +52,7 @@
           pkgs.kdePackages.konsole
           pkgs.kdePackages.dolphin
           pkgs.dbus
+          pkgs.mesa
           pkgs.xorg.xauth
         ];
         pathsToLink = [ "/bin" "/lib" "/share" ];
