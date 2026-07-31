@@ -12,14 +12,14 @@
       kwinAnland = pkgs.kdePackages.kwin.overrideAttrs (old: {
         pname = "kwin-anland";
         postPatch = lib.optionalString (old ? postPatch && old.postPatch != null) old.postPatch + ''
-          if patch --dry-run -p1 < ${../producers/kde/ubuntu2604_v5/kwin.patch} >/dev/null 2>&1; then
-            patch -p1 < ${../producers/kde/ubuntu2604_v5/kwin.patch}
-            cp -r ${../producers/kde/anland_backend_v5/src/backends/anland} src/backends/anland
-            echo ubuntu2604-v5 > anland-patch-variant
-          elif patch --dry-run -p1 < ${../producers/kde/Debian13_v5/kwin.patch} >/dev/null 2>&1; then
+          if patch --dry-run -p1 < ${../producers/kde/Debian13_v5/kwin.patch} >/dev/null 2>&1; then
             patch -p1 < ${../producers/kde/Debian13_v5/kwin.patch}
             cp -r ${../producers/kde/anland_backend_debian13_v5/src/backends/anland} src/backends/anland
             echo debian13-v5 > anland-patch-variant
+          elif patch --dry-run -p1 < ${../producers/kde/ubuntu2604_v5/kwin.patch} >/dev/null 2>&1; then
+            patch -p1 < ${../producers/kde/ubuntu2604_v5/kwin.patch}
+            cp -r ${../producers/kde/anland_backend_v5/src/backends/anland} src/backends/anland
+            echo ubuntu2604-v5 > anland-patch-variant
           else
             echo "No AnLand KWin patch matches KWin ${old.version}" >&2
             exit 1
