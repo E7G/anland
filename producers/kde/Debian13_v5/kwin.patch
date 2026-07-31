@@ -262,3 +262,45 @@ index 26d51b4..d7baa81 100644
      }
  
      KWin::WaylandServer *server = KWin::WaylandServer::create();
+diff --git a/src/compositor.cpp b/src/compositor.cpp
+index f615709..bee1e7d 100644
+--- a/src/compositor.cpp
++++ b/src/compositor.cpp
+@@ -181,9 +181,11 @@ static QVariantHash collectCrashInformation(const EglBackend *backend)
+     QVariantHash gpuInformation;
+     gpuInformation[QStringLiteral("api_type")] = QStringLiteral("OpenGL");
+     gpuInformation[QStringLiteral("name")] = QString::fromUtf8(glPlatform->glRendererString());
+-    if (const auto pciInfo = backend->drmDevice()->pciDeviceInfo()) {
+-        gpuInformation[QStringLiteral("id")] = QString::number(pciInfo->device_id, 16);
+-        gpuInformation[QStringLiteral("vendor_id")] = QString::number(pciInfo->vendor_id, 16);
++    if (DrmDevice *drmDevice = backend->drmDevice()) {
++        if (const auto pciInfo = drmDevice->pciDeviceInfo()) {
++            gpuInformation[QStringLiteral("id")] = QString::number(pciInfo->device_id, 16);
++            gpuInformation[QStringLiteral("vendor_id")] = QString::number(pciInfo->vendor_id, 16);
++        }
+     }
+     if (glPlatform->driverVersion().isValid()) {
+         gpuInformation[QStringLiteral("version")] = glPlatform->driverVersion().toString();
+diff --git a/src/wayland_server.cpp b/src/wayland_server.cpp
+index f5b3443..21dfe85 100644
+--- a/src/wayland_server.cpp
++++ b/src/wayland_server.cpp
+@@ -843,7 +843,8 @@ ExternalBrightnessV1 *WaylandServer::externalBrightness() const
+ 
+ void WaylandServer::setRenderBackend(RenderBackend *backend)
+ {
+-    if (backend->drmDevice()->supportsSyncObjTimelines()) {
++    DrmDevice *drmDevice = backend->drmDevice();
++    if (drmDevice && drmDevice->supportsSyncObjTimelines()) {
+         // ensure the DRM_IOCTL_SYNCOBJ_EVENTFD ioctl is supported
+         const auto linuxVersion = linuxKernelVersion();
+         if (linuxVersion.majorVersion() < 6 && linuxVersion.minorVersion() < 6) {
+@@ -854,7 +855,7 @@ void WaylandServer::setRenderBackend(RenderBackend *backend)
+             return;
+         }
+         if (!m_linuxDrmSyncObj) {
+-            m_linuxDrmSyncObj = new LinuxDrmSyncObjV1Interface(m_display, m_display, backend->drmDevice());
++            m_linuxDrmSyncObj = new LinuxDrmSyncObjV1Interface(m_display, m_display, drmDevice);
+         }
+     } else if (m_linuxDrmSyncObj) {
+         m_linuxDrmSyncObj->remove();
