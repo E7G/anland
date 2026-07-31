@@ -177,7 +177,7 @@ bool AnlandBackend::initialize()
     return true;
 }
 
-std::unique_ptr<OpenGLBackend> AnlandBackend::createOpenGLBackend()
+std::unique_ptr<EglBackend> AnlandBackend::createOpenGLBackend()
 {
     return std::make_unique<AnlandEglBackend>(this);
 }

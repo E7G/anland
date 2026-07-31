@@ -33,9 +33,9 @@ class AnlandOutput;
 class AnlandInputDevice;
 class AbstractDataSource;
 class DrmDevice;
+class EglBackend;
 class EglDisplay;
 class InputBackend;
-class OpenGLBackend;
 
 class KWIN_EXPORT AnlandBackend : public OutputBackend
 {
@@ -47,7 +47,7 @@ public:
 
     bool initialize() override;
 
-    std::unique_ptr<OpenGLBackend> createOpenGLBackend() override;
+    std::unique_ptr<EglBackend> createOpenGLBackend() override;
     std::unique_ptr<InputBackend> createInputBackend() override;
     QList<CompositingType> supportedCompositors() const override;
     Outputs outputs() const override;
