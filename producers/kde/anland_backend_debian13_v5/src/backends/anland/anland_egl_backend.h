@@ -15,7 +15,7 @@
 #pragma once
 
 #include "core/outputlayer.h"
-#include "platformsupport/scenes/opengl/abstract_egl_backend.h"
+#include "opengl/eglbackend.h"
 
 #include <QRegion>
 #include <array>
@@ -34,8 +34,6 @@ class GLTexture;
 class DrmDevice;
 class OutputFrame;
 class Output;
-class SurfacePixmap;
-class SurfaceTexture;
 class AnlandBackend;
 class AnlandEglBackend;
 class AnlandOutput;
@@ -82,7 +80,7 @@ private:
     std::array<QRegion, MAX_BUFS> m_accumDamage;
 };
 
-class AnlandEglBackend : public AbstractEglBackend
+class AnlandEglBackend : public EglBackend
 {
     Q_OBJECT
 
@@ -91,7 +89,6 @@ public:
     ~AnlandEglBackend() override;
 
     void init() override;
-    std::unique_ptr<SurfaceTexture> createSurfaceTextureWayland(SurfacePixmap *pixmap) override;
     std::pair<std::shared_ptr<KWin::GLTexture>, ColorDescription> textureForOutput(Output *output) const override;
     OutputLayer *primaryLayer(Output *output) override;
     bool present(Output *output, const std::shared_ptr<OutputFrame> &frame) override;

@@ -16,7 +16,6 @@
 #include "opengl/egldisplay.h"
 #include "opengl/eglnativefence.h"
 #include "opengl/glutils.h"
-#include "platformsupport/scenes/opengl/basiceglsurfacetexture_wayland.h"
 #include "utils/filedescriptor.h"
 
 #include <drm_fourcc.h>
@@ -70,7 +69,7 @@ void AnlandEglLayer::releaseBuffers()
 {
     // Destroying the GL textures/framebuffers needs the context current. Callers
     // (backend state machine on fallback, ~AnlandEglLayer) may run outside a frame.
-    m_backend->makeCurrent();
+    m_backend->openglContext()->makeCurrent();
 
     for (int i = 0; i < MAX_BUFS; i++) {
         m_fbos[i].reset();
@@ -82,7 +81,7 @@ void AnlandEglLayer::releaseBuffers()
 
 bool AnlandEglLayer::importBuffers(int count)
 {
-    m_backend->makeCurrent();
+    m_backend->openglContext()->makeCurrent();
 
     releaseBuffers();
 
@@ -169,7 +168,7 @@ void AnlandEglLayer::onOutputTransformChanged()
 
 std::optional<OutputLayerBeginFrameInfo> AnlandEglLayer::doBeginFrame()
 {
-    m_backend->makeCurrent();
+    m_backend->openglContext()->makeCurrent();
 
     // Buffer import/release is driven by the backend state machine (importBuffers()
     // on reconnect, releaseBuffers() on fallback), not here. With nothing imported
@@ -243,7 +242,7 @@ std::shared_ptr<GLTexture> AnlandEglLayer::texture() const
 }
 
 AnlandEglBackend::AnlandEglBackend(AnlandBackend *b)
-    : AbstractEglBackend()
+    : EglBackend()
     , m_backend(b)
 {
 }
@@ -300,7 +299,6 @@ void AnlandEglBackend::init()
         return;
     }
 
-    setSupportsBufferAge(false);
     initWayland();
 
     const auto outputs = m_backend->outputs();
@@ -314,12 +312,12 @@ void AnlandEglBackend::init()
 
 bool AnlandEglBackend::initRenderingContext()
 {
-    return createContext(EGL_NO_CONFIG_KHR) && makeCurrent();
+    return createContext(EGL_NO_CONFIG_KHR) && openglContext()->makeCurrent();
 }
 
 void AnlandEglBackend::addOutput(Output *output)
 {
-    makeCurrent();
+    openglContext()->makeCurrent();
     auto *anlandOutput = static_cast<AnlandOutput *>(output);
     auto layer = std::make_unique<AnlandEglLayer>(anlandOutput, this);
     // Let AnlandBackend reach this layer through its output (output->eglLayer()).
@@ -329,14 +327,9 @@ void AnlandEglBackend::addOutput(Output *output)
 
 void AnlandEglBackend::removeOutput(Output *output)
 {
-    makeCurrent();
+    openglContext()->makeCurrent();
     static_cast<AnlandOutput *>(output)->setEglLayer(nullptr);
     m_outputs.erase(output);
-}
-
-std::unique_ptr<SurfaceTexture> AnlandEglBackend::createSurfaceTextureWayland(SurfacePixmap *pixmap)
-{
-    return std::make_unique<BasicEGLSurfaceTextureWayland>(this, pixmap);
 }
 
 OutputLayer *AnlandEglBackend::primaryLayer(Output *output)
