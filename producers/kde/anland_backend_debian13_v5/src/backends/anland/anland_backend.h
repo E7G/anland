@@ -65,11 +65,7 @@ public:
     {
         return m_display;
     }
-    /**
-     * DRM render device backing GL/EGL. KWin dereferences this during OpenGL
-     * compositor setup (syncobj-timeline / dmabuf-feedback probing), so it must
-     * be non-null; AnlandEglBackend::drmDevice() forwards to it.
-     */
+    /** Optional DRM render device. KGSL-only Android systems use surfaceless EGL. */
     DrmDevice *drmDevice() const
     {
         return m_drmDevice.get();

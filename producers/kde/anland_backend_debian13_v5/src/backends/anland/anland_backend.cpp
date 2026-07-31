@@ -135,12 +135,11 @@ bool AnlandBackend::initialize()
         return false;
     }
 
-    // KWin dereferences renderBackend->drmDevice() during OpenGL compositor
-    // setup; without a real device it segfaults. Open one up front.
+    // Prefer a DRM render node when available. Android KGSL systems usually do
+    // not expose one, so continue with the surfaceless EGL path in that case.
     m_drmDevice = openRenderDevice();
     if (!m_drmDevice) {
-        qCWarning(KWIN_ANLAND) << "no usable DRM render device; cannot bring up OpenGL compositing";
-        return false;
+        qCInfo(KWIN_ANLAND) << "no DRM render device; using surfaceless EGL without syncobj support";
     }
 
     m_inputDevice = std::make_unique<AnlandInputDevice>();
