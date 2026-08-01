@@ -27,7 +27,7 @@
     <string name="section_orientation">Screen Orientation</string>
     <string name="section_power">Power</string>
     <string name="keep_screen_on_switch">Keep screen on</string>
-    <string name="keep_screen_on_hint">Off by default to save battery. Turn on only when Android's normal screen timeout would interrupt a long task.</string>
+    <string name="keep_screen_on_hint">Off by default to save battery. Turn on only when Android\'s normal screen timeout would interrupt a long task.</string>
     <string name="orientation_label">Force screen orientation</string>
     <string-array name="orientation_options">
         <item>Default (system)</item>
