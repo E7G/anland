@@ -5,6 +5,9 @@ on:
     branches: [ '**' ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-apk:
     runs-on: ubuntu-latest
@@ -110,3 +113,33 @@ jobs:
         with:
           name: anland-daemon
           path: magisk_module/
+
+      - name: Package optimized Mi Pad 4 release
+        if: github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          mkdir -p release_assets
+          cp consumers/anland_v5/android_consumer/app/build/outputs/apk/release/anland-v5.apk \
+             release_assets/anland-mi-pad4-optimized.apk
+          (cd magisk_module && zip -9 -r ../release_assets/anland-daemon-mi-pad4.zip .)
+          (cd release_assets && sha256sum * > SHA256SUMS)
+
+      - name: Publish GitHub Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mi-pad4-optimized-v${{ github.run_number }}
+          name: Anland 小米平板 4 优化版 v${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          body: |
+            小米平板 4 / Android 16 / Droidspaces 优化版。
+
+            - 修复设置子页面空白和无法点击
+            - 设置界面自动适配系统深色模式
+            - 修复 Plasma Mobile 触摸 DOWN/MOVE/UP 丢序和上滑失效
+            - 对缺失 DOWN 的触摸序列自动恢复
+            - 帧循环按显示刷新率限速，避免 fallback/reconnect 满核
+            - 降低无音频连接时的后台唤醒频率
+            - 修复重复 fallback JNI 局部引用泄漏
+          files: release_assets/*

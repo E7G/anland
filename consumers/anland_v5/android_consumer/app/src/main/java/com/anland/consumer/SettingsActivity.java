@@ -14,6 +14,7 @@ import android.text.Editable;
 import android.text.TextWatcher;
 import android.text.InputType;
 import android.util.Log;
+import android.util.SparseIntArray;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -45,13 +46,9 @@ public class SettingsActivity extends Activity {
     private static final String KEY_USE_ROOT = "use_root";
     private static final String KEY_MIC_ENABLED = "mic_enabled";
     private static final String KEY_CAMERA_ENABLED = "camera_enabled";
-    private static final String KEY_AUDIO_KEEPALIVE = "audio_keepalive";
     private static final String KEY_SPEAKER_LATENCY_MS = "speaker_latency_ms";
     private static final String KEY_MIC_LATENCY_MS = "mic_latency_ms";
     private static final String KEY_ACCESSIBILITY_ENABLED = "accessibility_key_intercept";
-    private static final String KEY_IMMERSIVE_ENABLED = ImmersiveMode.KEY_ENABLED;
-    private static final String KEY_IMMERSIVE_KEYCODE = ImmersiveMode.KEY_KEYCODE;
-    private static final String KEY_IMMERSIVE_SCANCODE = ImmersiveMode.KEY_SCANCODE;
     private static final String KEY_EXTRA_KEYS_MODE = "extra_keys_mode";
     // Mapped to R.array.extra_keys_mode_options positions
     private static final String MODE_ALWAYS = "always";
@@ -76,29 +73,66 @@ public class SettingsActivity extends Activity {
     private static final String KEY_SCROLL_THRESHOLD = "touchpad_scroll_threshold";
     private static final String KEY_MOVE_THRESHOLD = "touchpad_move_threshold";
     private static final String KEY_GESTURE_SCALE = "touchpad_gesture_scale";
-    private static final String KEY_DISABLE_MULTI_FINGER_GESTURES =
-            "disable_multi_finger_gestures";
 
     // Latency presets: target buffer in ms (0 = auto). The user-visible labels live
     // in the R.array.latency_labels string-array, parallel to this array.
     private static final int[] LATENCY_MS = {0, 1, 3, 5, 10, 20};
 
+    private int colorBackground;
+    private int colorTextPrimary;
+    private int colorTextSecondary;
+    private int colorAccent;
+    private int colorDivider;
+
     // Which secondary page is on screen. Back returns HOME -> exits the activity.
     private enum Page { HOME, KEYBOARD, TOUCHPAD, CONNECTION, RESOLUTION, GENERAL }
     private Page currentPage = Page.HOME;
 
-    // The key-binding row currently counting down, if any: it gets the next key
-    // press. The rows themselves live in the page's view hierarchy.
-    private KeyBinding listeningBinding;
+    private Button bindButton;
+    private TextView statusText;
+    private CountDownTimer listenTimer;
+    private boolean isListening = false;
 
     // Custom extra-keys layout editor (JSON), and the SAF file-picker request code.
     private EditText layoutInput;
     private static final int REQ_PICK_LAYOUT = 2001;
 
+    // Android keycode → localized name string resource
+    private static final SparseIntArray KEY_NAME_RES = new SparseIntArray();
+    static {
+        KEY_NAME_RES.put(KeyEvent.KEYCODE_VOLUME_UP, R.string.key_volume_up);
+        KEY_NAME_RES.put(KeyEvent.KEYCODE_VOLUME_DOWN, R.string.key_volume_down);
+        KEY_NAME_RES.put(KeyEvent.KEYCODE_VOLUME_MUTE, R.string.key_volume_mute);
+        KEY_NAME_RES.put(KeyEvent.KEYCODE_POWER, R.string.key_power);
+        KEY_NAME_RES.put(KeyEvent.KEYCODE_CAMERA, R.string.key_camera);
+        KEY_NAME_RES.put(KeyEvent.KEYCODE_HEADSETHOOK, R.string.key_headset_hook);
+        KEY_NAME_RES.put(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, R.string.key_media_play_pause);
+        KEY_NAME_RES.put(KeyEvent.KEYCODE_MEDIA_NEXT, R.string.key_media_next);
+        KEY_NAME_RES.put(KeyEvent.KEYCODE_MEDIA_PREVIOUS, R.string.key_media_previous);
+        KEY_NAME_RES.put(KeyEvent.KEYCODE_BRIGHTNESS_UP, R.string.key_brightness_up);
+        KEY_NAME_RES.put(KeyEvent.KEYCODE_BRIGHTNESS_DOWN, R.string.key_brightness_down);
+        KEY_NAME_RES.put(KeyEvent.KEYCODE_HOME, R.string.key_home);
+        KEY_NAME_RES.put(KeyEvent.KEYCODE_BACK, R.string.key_back);
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        colorBackground = themeColor(android.R.attr.colorBackground, Color.WHITE);
+        colorTextPrimary = themeColor(android.R.attr.textColorPrimary, Color.BLACK);
+        colorTextSecondary = themeColor(android.R.attr.textColorSecondary, Color.GRAY);
+        colorAccent = themeColor(android.R.attr.colorAccent, 0xFF42A5F5);
+        int control = themeColor(android.R.attr.colorControlNormal, colorTextSecondary);
+        colorDivider = (control & 0x00FFFFFF) | 0x33000000;
         showHome();
+    }
+
+    private int themeColor(int attribute, int fallback) {
+        android.content.res.TypedArray values =
+            obtainStyledAttributes(new int[]{attribute});
+        int color = values.getColor(0, fallback);
+        values.recycle();
+        return color;
     }
 
     // ============================================================
@@ -110,7 +144,8 @@ public class SettingsActivity extends Activity {
     // and install it. Reused by the home list and every secondary page.
     private void setContent(final LinearLayout content) {
         ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(Color.WHITE);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(colorBackground);
         scroll.addView(content);
         setContentView(scroll);
 
@@ -129,10 +164,13 @@ public class SettingsActivity extends Activity {
                          base + in.right, base + in.bottom);
             return insets;
         });
+        // Insets have usually already been dispatched when switching a category.
+        // Request them for every new page; otherwise Android 15/16 can measure the
+        // replacement content as an empty edge-to-edge view until the next rotation.
+        content.post(content::requestApplyInsets);
     }
 
     private void showHome() {
-        stopListening();
         currentPage = Page.HOME;
 
         LinearLayout root = new LinearLayout(this);
@@ -193,13 +231,13 @@ public class SettingsActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(titleRes);
         t.setTextSize(18);
-        t.setTextColor(Color.BLACK);
+        t.setTextColor(colorTextPrimary);
         texts.addView(t);
 
         TextView s = new TextView(this);
         s.setText(subtitleRes);
         s.setTextSize(13);
-        s.setTextColor(Color.GRAY);
+        s.setTextColor(colorTextSecondary);
         s.setPadding(0, dp(2), 0, 0);
         texts.addView(s);
 
@@ -208,7 +246,7 @@ public class SettingsActivity extends Activity {
         TextView chevron = new TextView(this);
         chevron.setText("›");
         chevron.setTextSize(22);
-        chevron.setTextColor(Color.GRAY);
+        chevron.setTextColor(colorTextSecondary);
         row.addView(chevron);
 
         parent.addView(row);
@@ -216,20 +254,19 @@ public class SettingsActivity extends Activity {
         View divider = new View(this);
         divider.setLayoutParams(new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, dp(1))));
-        divider.setBackgroundColor(0xFFE0E0E0);
+        divider.setBackgroundColor(colorDivider);
         parent.addView(divider);
     }
 
     // A fresh page root with a back link and a bold page title.
     private LinearLayout newPage(int titleRes) {
-        stopListening();
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
 
         TextView back = new TextView(this);
         back.setText(R.string.nav_back);
         back.setTextSize(16);
-        back.setTextColor(0xFF1565C0);
+        back.setTextColor(colorAccent);
         back.setPadding(0, 0, 0, dp(12));
         back.setClickable(true);
         back.setOnClickListener(v -> showHome());
@@ -250,11 +287,11 @@ public class SettingsActivity extends Activity {
         currentPage = Page.KEYBOARD;
         LinearLayout root = newPage(R.string.cat_keyboard_title);
         buildVirtualKeyboardSection(root);
-        buildImmersiveSection(root);
         buildAccessibilitySection(root);
         buildExtraKeysSection(root);
         buildCustomLayoutSection(root);
         setContent(root);
+        updateStatus();
     }
 
     private void showTouchpadPage() {
@@ -290,7 +327,7 @@ public class SettingsActivity extends Activity {
     public void onBackPressed() {
         // While listening for a key binding, let onKeyDown capture the Back key
         // instead of navigating back.
-        if (listeningBinding != null) return;
+        if (isListening) return;
         if (currentPage != Page.HOME) {
             showHome();
         } else {
@@ -303,180 +340,23 @@ public class SettingsActivity extends Activity {
     // ============================================================
 
     private void buildVirtualKeyboardSection(LinearLayout root) {
-        addSectionHeader(root, R.string.section_virtual_keyboard, 0);
-        // Constructing the row appends it to `root`.
-        new KeyBinding(root, KEY_BOUND_KEYCODE, null, R.string.bind_key_button);
+        TextView bindLabel = new TextView(this);
+        bindLabel.setText(R.string.section_virtual_keyboard);
+        bindLabel.setTextSize(16);
+        bindLabel.setTypeface(null, Typeface.BOLD);
+        bindLabel.setPadding(0, 0, 0, dp(8));
+        root.addView(bindLabel);
 
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        Switch raiseDesktopSwitch = new Switch(this);
-        raiseDesktopSwitch.setText(R.string.raise_desktop_for_soft_keyboard);
-        raiseDesktopSwitch.setTextSize(14);
-        raiseDesktopSwitch.setPadding(0, dp(8), 0, 0);
-        raiseDesktopSwitch.setChecked(!prefs.getBoolean(KEY_KEYBOARD_FLOATING, false));
-        raiseDesktopSwitch.setOnCheckedChangeListener((v, checked) ->
-            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                .putBoolean(KEY_KEYBOARD_FLOATING, !checked).apply());
-        root.addView(raiseDesktopSwitch);
+        statusText = new TextView(this);
+        statusText.setTextSize(14);
+        statusText.setTextColor(colorTextSecondary);
+        statusText.setPadding(0, 0, 0, dp(16));
+        root.addView(statusText);
 
-        TextView raiseDesktopHint = new TextView(this);
-        raiseDesktopHint.setText(R.string.raise_desktop_for_soft_keyboard_hint);
-        raiseDesktopHint.setTextSize(12);
-        raiseDesktopHint.setTextColor(Color.GRAY);
-        raiseDesktopHint.setPadding(0, dp(4), 0, dp(8));
-        root.addView(raiseDesktopHint);
-    }
-
-    /**
-     * Immersive mode: a root helper takes the touchscreen, keyboard and pointer
-     * away from Android for as long as the session lasts, so every input goes to
-     * the Linux desktop instead. The switch is a safety gate rather than the
-     * feature itself — with it off the bound key does nothing — and the binding
-     * below records the key's raw scan code, which is the only thing the root
-     * helper can compare while Android is no longer in the loop.
-     */
-    private void buildImmersiveSection(LinearLayout root) {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-
-        addSectionHeader(root, R.string.section_immersive, dp(24));
-
-        Switch immersiveSwitch = new Switch(this);
-        immersiveSwitch.setText(R.string.immersive_switch);
-        immersiveSwitch.setTextSize(14);
-        immersiveSwitch.setPadding(0, 0, 0, 0);
-        immersiveSwitch.setChecked(prefs.getBoolean(KEY_IMMERSIVE_ENABLED, false));
-        immersiveSwitch.setOnCheckedChangeListener((v, checked) ->
-            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                .putBoolean(KEY_IMMERSIVE_ENABLED, checked).apply());
-        root.addView(immersiveSwitch);
-
-        TextView immersiveHint = new TextView(this);
-        immersiveHint.setText(R.string.immersive_hint);
-        immersiveHint.setTextSize(12);
-        immersiveHint.setTextColor(Color.GRAY);
-        immersiveHint.setPadding(0, dp(4), 0, dp(12));
-        root.addView(immersiveHint);
-
-        // Constructing the row appends it to `root`.
-        new KeyBinding(root, KEY_IMMERSIVE_KEYCODE, KEY_IMMERSIVE_SCANCODE,
-                R.string.bind_immersive_key_button);
-    }
-
-    private void addSectionHeader(LinearLayout root, int titleRes, int topPadding) {
-        TextView header = new TextView(this);
-        header.setText(titleRes);
-        header.setTextSize(16);
-        header.setTypeface(null, Typeface.BOLD);
-        header.setPadding(0, topPadding, 0, dp(8));
-        root.addView(header);
-    }
-
-    /**
-     * One "bind a key" row: a status line plus a button that listens for the next
-     * key press for five seconds. Both bindings on this page use it, so the
-     * listening state lives per row instead of on the activity.
-     */
-    private final class KeyBinding {
-        private final String keyPref;
-        /**
-         * Where to store the raw evdev scan code, or null when only the Android
-         * key code matters. Immersive mode needs it: {@link KeyCodeMapper} has no
-         * entry for the volume keys, and its root helper only ever sees evdev
-         * codes.
-         */
-        private final String scanPref;
-        private final int buttonLabelRes;
-        private final Button button;
-        private final TextView status;
-        private CountDownTimer timer;
-
-        KeyBinding(LinearLayout root, String keyPref, String scanPref,
-                   int buttonLabelRes) {
-            this.keyPref = keyPref;
-            this.scanPref = scanPref;
-            this.buttonLabelRes = buttonLabelRes;
-
-            status = new TextView(SettingsActivity.this);
-            status.setTextSize(14);
-            status.setTextColor(Color.GRAY);
-            status.setPadding(0, 0, 0, dp(16));
-            root.addView(status);
-
-            button = new Button(SettingsActivity.this);
-            button.setText(buttonLabelRes);
-            button.setOnClickListener(v -> startListening());
-            root.addView(button);
-
-            updateStatus();
-        }
-
-        private void startListening() {
-            if (listeningBinding == this)
-                return;
-            stopListening();
-            listeningBinding = this;
-            button.setText(getString(R.string.listening_countdown, 5));
-            timer = new CountDownTimer(5000, 1000) {
-                @Override
-                public void onTick(long millisUntilFinished) {
-                    button.setText(getString(R.string.listening_countdown,
-                        (int) (millisUntilFinished / 1000)));
-                }
-
-                @Override
-                public void onFinish() {
-                    // Timed out with no key: clear the binding, matching the
-                    // original behaviour of "listen, then store whatever came".
-                    bind(UNBOUND, UNBOUND);
-                }
-            }.start();
-        }
-
-        /** Stop listening without changing what is bound. */
-        void cancel() {
-            if (timer != null) {
-                timer.cancel();
-                timer = null;
-            }
-            button.setText(buttonLabelRes);
-        }
-
-        void bind(int keycode, int scancode) {
-            cancel();
-            listeningBinding = null;
-            SharedPreferences.Editor edit =
-                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit();
-            edit.putInt(keyPref, keycode);
-            if (scanPref != null)
-                edit.putInt(scanPref, scancode);
-            edit.apply();
-            updateStatus();
-        }
-
-        void updateStatus() {
-            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-            int bound = prefs.getInt(keyPref, UNBOUND);
-            int scan = scanPref == null ? UNBOUND : prefs.getInt(scanPref, UNBOUND);
-            if (bound == UNBOUND && scan <= 0) {
-                status.setText(R.string.status_current_none);
-                status.setTextColor(Color.GRAY);
-                return;
-            }
-            String name = KeyCodeMapper.keyName(SettingsActivity.this, bound, scan);
-            // A binding that resolves to no evdev code is useless to the root
-            // helper, so say so here rather than let the key quietly do nothing.
-            if (scanPref != null && resolveEvdev(bound, scan) <= 0) {
-                status.setText(getString(R.string.status_current_no_scancode, name));
-                status.setTextColor(0xFFC62828);  // red
-                return;
-            }
-            status.setText(getString(R.string.status_current, name));
-            status.setTextColor(Color.GRAY);
-        }
-
-        private int resolveEvdev(int keycode, int scancode) {
-            return scancode > 0 ? scancode
-                    : (keycode == UNBOUND ? -1 : KeyCodeMapper.getScanCode(keycode));
-        }
+        bindButton = new Button(this);
+        bindButton.setText(R.string.bind_key_button);
+        bindButton.setOnClickListener(v -> startListening());
+        root.addView(bindButton);
     }
 
     private void buildAccessibilitySection(LinearLayout root) {
@@ -501,7 +381,7 @@ public class SettingsActivity extends Activity {
         TextView accessibilityHint = new TextView(this);
         accessibilityHint.setText(R.string.accessibility_hint);
         accessibilityHint.setTextSize(12);
-        accessibilityHint.setTextColor(Color.GRAY);
+        accessibilityHint.setTextColor(colorTextSecondary);
         accessibilityHint.setPadding(0, dp(4), 0, dp(8));
         root.addView(accessibilityHint);
     }
@@ -548,7 +428,7 @@ public class SettingsActivity extends Activity {
         TextView modeHint = new TextView(this);
         modeHint.setText(R.string.extra_keys_mode_hint);
         modeHint.setTextSize(12);
-        modeHint.setTextColor(Color.GRAY);
+        modeHint.setTextColor(colorTextSecondary);
         modeHint.setPadding(0, dp(4), 0, dp(8));
         root.addView(modeHint);
 
@@ -566,10 +446,27 @@ public class SettingsActivity extends Activity {
         TextView backOpensExtraKeysHint = new TextView(this);
         backOpensExtraKeysHint.setText(R.string.back_opens_hint);
         backOpensExtraKeysHint.setTextSize(12);
-        backOpensExtraKeysHint.setTextColor(Color.GRAY);
+        backOpensExtraKeysHint.setTextColor(colorTextSecondary);
         backOpensExtraKeysHint.setPadding(0, dp(4), 0, dp(8));
         root.addView(backOpensExtraKeysHint);
 
+        // === Keyboard floating ===
+        Switch keyboardFloatingSwitch = new Switch(this);
+        keyboardFloatingSwitch.setText(R.string.keyboard_floating_switch);
+        keyboardFloatingSwitch.setTextSize(14);
+        keyboardFloatingSwitch.setPadding(0, dp(16), 0, 0);
+        keyboardFloatingSwitch.setChecked(prefs.getBoolean(KEY_KEYBOARD_FLOATING, true));
+        keyboardFloatingSwitch.setOnCheckedChangeListener((v, checked) ->
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putBoolean(KEY_KEYBOARD_FLOATING, checked).apply());
+        root.addView(keyboardFloatingSwitch);
+
+        TextView keyboardFloatingHint = new TextView(this);
+        keyboardFloatingHint.setText(R.string.keyboard_floating_hint);
+        keyboardFloatingHint.setTextSize(12);
+        keyboardFloatingHint.setTextColor(colorTextSecondary);
+        keyboardFloatingHint.setPadding(0, dp(4), 0, dp(8));
+        root.addView(keyboardFloatingHint);
     }
 
     private void buildCustomLayoutSection(LinearLayout root) {
@@ -631,7 +528,7 @@ public class SettingsActivity extends Activity {
         TextView layoutHint = new TextView(this);
         layoutHint.setText(R.string.layout_hint);
         layoutHint.setTextSize(12);
-        layoutHint.setTextColor(Color.GRAY);
+        layoutHint.setTextColor(colorTextSecondary);
         layoutHint.setPadding(0, dp(4), 0, dp(8));
         root.addView(layoutHint);
     }
@@ -701,7 +598,7 @@ public class SettingsActivity extends Activity {
         TextView notificationHint = new TextView(this);
         notificationHint.setText(R.string.notification_hint);
         notificationHint.setTextSize(12);
-        notificationHint.setTextColor(Color.GRAY);
+        notificationHint.setTextColor(colorTextSecondary);
         notificationHint.setPadding(0, dp(4), 0, dp(8));
         root.addView(notificationHint);
     }
@@ -726,7 +623,7 @@ public class SettingsActivity extends Activity {
         TextView touchpadHint = new TextView(this);
         touchpadHint.setText(R.string.touchpad_hint);
         touchpadHint.setTextSize(12);
-        touchpadHint.setTextColor(Color.GRAY);
+        touchpadHint.setTextColor(colorTextSecondary);
         touchpadHint.setPadding(0, dp(4), 0, dp(12));
         root.addView(touchpadHint);
 
@@ -745,7 +642,7 @@ public class SettingsActivity extends Activity {
         TextView pointerCaptureHint = new TextView(this);
         pointerCaptureHint.setText(R.string.pointer_capture_hint);
         pointerCaptureHint.setTextSize(12);
-        pointerCaptureHint.setTextColor(Color.GRAY);
+        pointerCaptureHint.setTextColor(colorTextSecondary);
         pointerCaptureHint.setPadding(0, dp(4), 0, dp(12));
         root.addView(pointerCaptureHint);
 
@@ -761,7 +658,7 @@ public class SettingsActivity extends Activity {
 
         final TextView accelValue = new TextView(this);
         accelValue.setTextSize(14);
-        accelValue.setTextColor(Color.BLUE);
+        accelValue.setTextColor(colorAccent);
         accelLayout.addView(accelValue);
 
         SeekBar accelSeek = new SeekBar(this);
@@ -798,28 +695,9 @@ public class SettingsActivity extends Activity {
         TextView reverseScrollHint = new TextView(this);
         reverseScrollHint.setText(R.string.scroll_reverse_hint);
         reverseScrollHint.setTextSize(12);
-        reverseScrollHint.setTextColor(Color.GRAY);
+        reverseScrollHint.setTextColor(colorTextSecondary);
         reverseScrollHint.setPadding(0, dp(4), 0, dp(12));
         root.addView(reverseScrollHint);
-
-        // Disable pinch (two-finger spread) and three-or-more-finger gestures.
-        Switch disableMultiFingerSwitch = new Switch(this);
-        disableMultiFingerSwitch.setText(R.string.disable_multi_finger_switch);
-        disableMultiFingerSwitch.setTextSize(14);
-        disableMultiFingerSwitch.setPadding(0, dp(8), 0, 0);
-        disableMultiFingerSwitch.setChecked(prefs.getBoolean(
-                KEY_DISABLE_MULTI_FINGER_GESTURES, false));
-        disableMultiFingerSwitch.setOnCheckedChangeListener((v, checked) ->
-                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                        .putBoolean(KEY_DISABLE_MULTI_FINGER_GESTURES, checked).apply());
-        root.addView(disableMultiFingerSwitch);
-
-        TextView disableMultiFingerHint = new TextView(this);
-        disableMultiFingerHint.setText(R.string.disable_multi_finger_hint);
-        disableMultiFingerHint.setTextSize(12);
-        disableMultiFingerHint.setTextColor(Color.GRAY);
-        disableMultiFingerHint.setPadding(0, dp(4), 0, dp(12));
-        root.addView(disableMultiFingerHint);
 
         addFloatSlider(root, R.string.scroll_speed_label, R.string.scroll_speed_value,
                 null, KEY_SCROLL_SPEED, 0.05f, 3.0f, 0.05f, 0.5f);
@@ -855,7 +733,7 @@ public class SettingsActivity extends Activity {
 
         final TextView value = new TextView(this);
         value.setTextSize(14);
-        value.setTextColor(Color.BLUE);
+        value.setTextColor(colorAccent);
         layout.addView(value);
 
         SeekBar seek = new SeekBar(this);
@@ -881,7 +759,7 @@ public class SettingsActivity extends Activity {
             TextView hint = new TextView(this);
             hint.setText(hintRes);
             hint.setTextSize(12);
-            hint.setTextColor(Color.GRAY);
+            hint.setTextColor(colorTextSecondary);
             hint.setPadding(0, dp(2), 0, dp(12));
             root.addView(hint);
         }
@@ -897,7 +775,7 @@ public class SettingsActivity extends Activity {
         TextView sockLabel = new TextView(this);
         sockLabel.setText(R.string.socket_path_label);
         sockLabel.setTextSize(14);
-        sockLabel.setTextColor(Color.GRAY);
+        sockLabel.setTextColor(colorTextSecondary);
         sockLabel.setPadding(0, 0, 0, dp(4));
         root.addView(sockLabel);
 
@@ -921,7 +799,7 @@ public class SettingsActivity extends Activity {
         TextView secLabel = new TextView(this);
         secLabel.setText(R.string.second_window_label);
         secLabel.setTextSize(14);
-        secLabel.setTextColor(Color.GRAY);
+        secLabel.setTextColor(colorTextSecondary);
         secLabel.setPadding(0, dp(16), 0, dp(4));
         root.addView(secLabel);
 
@@ -962,7 +840,7 @@ public class SettingsActivity extends Activity {
         TextView rootHint = new TextView(this);
         rootHint.setText(R.string.root_hint);
         rootHint.setTextSize(12);
-        rootHint.setTextColor(Color.GRAY);
+        rootHint.setTextColor(colorTextSecondary);
         rootHint.setPadding(0, dp(4), 0, 0);
         root.addView(rootHint);
 
@@ -982,7 +860,7 @@ public class SettingsActivity extends Activity {
         TextView micHint = new TextView(this);
         micHint.setText(R.string.mic_hint);
         micHint.setTextSize(12);
-        micHint.setTextColor(Color.GRAY);
+        micHint.setTextColor(colorTextSecondary);
         micHint.setPadding(0, dp(4), 0, 0);
         root.addView(micHint);
 
@@ -1003,30 +881,9 @@ public class SettingsActivity extends Activity {
         TextView cameraHint = new TextView(this);
         cameraHint.setText(R.string.camera_hint);
         cameraHint.setTextSize(12);
-        cameraHint.setTextColor(Color.GRAY);
+        cameraHint.setTextColor(colorTextSecondary);
         cameraHint.setPadding(0, dp(4), 0, 0);
         root.addView(cameraHint);
-
-        // Audio keep-alive: keep the AAudio output stream running (fed near-silent
-        // keepalive) so short Linux UI sounds (volume ticks, key clicks) always play
-        // immediately. Off by default so the audio path can sleep when the desktop is
-        // silent and save standby power.
-        Switch keepaliveSwitch = new Switch(this);
-        keepaliveSwitch.setText(R.string.audio_keepalive_switch);
-        keepaliveSwitch.setTextSize(14);
-        keepaliveSwitch.setPadding(0, dp(16), 0, 0);
-        keepaliveSwitch.setChecked(prefs.getBoolean(KEY_AUDIO_KEEPALIVE, false));
-        keepaliveSwitch.setOnCheckedChangeListener((v, checked) ->
-            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                .putBoolean(KEY_AUDIO_KEEPALIVE, checked).apply());
-        root.addView(keepaliveSwitch);
-
-        TextView keepaliveHint = new TextView(this);
-        keepaliveHint.setText(R.string.audio_keepalive_hint);
-        keepaliveHint.setTextSize(12);
-        keepaliveHint.setTextColor(Color.GRAY);
-        keepaliveHint.setPadding(0, dp(4), 0, 0);
-        root.addView(keepaliveHint);
 
         // Audio latency presets, separately for the speaker (playback) and microphone
         // (capture) paths. The chosen buffer is forwarded to the producer's PipeWire
@@ -1046,7 +903,7 @@ public class SettingsActivity extends Activity {
         TextView latHint = new TextView(this);
         latHint.setText(R.string.latency_hint);
         latHint.setTextSize(12);
-        latHint.setTextColor(Color.GRAY);
+        latHint.setTextColor(colorTextSecondary);
         latHint.setPadding(0, dp(4), 0, 0);
         root.addView(latHint);
     }
@@ -1115,7 +972,7 @@ public class SettingsActivity extends Activity {
     TextView hint = new TextView(this);
     hint.setText(R.string.resolution_hint);
     hint.setTextSize(12);
-    hint.setTextColor(Color.GRAY);
+    hint.setTextColor(colorTextSecondary);
     hint.setPadding(0, dp(4), 0, 0);
     root.addView(hint);
 
@@ -1131,7 +988,7 @@ public class SettingsActivity extends Activity {
     TextView autoStretchHint = new TextView(this);
     autoStretchHint.setText(R.string.auto_stretch_hint);
     autoStretchHint.setTextSize(12);
-    autoStretchHint.setTextColor(Color.GRAY);
+    autoStretchHint.setTextColor(colorTextSecondary);
     autoStretchHint.setPadding(0, dp(4), 0, 0);
     root.addView(autoStretchHint);
     }
@@ -1203,26 +1060,60 @@ public class SettingsActivity extends Activity {
         return box;
     }
 
-    /** Stop whichever row is counting down, leaving its binding untouched. */
-    private void stopListening() {
-        if (listeningBinding != null) {
-            listeningBinding.cancel();
-            listeningBinding = null;
+    private void startListening() {
+        if (isListening) return;
+        isListening = true;
+        bindButton.setText(getString(R.string.listening_countdown, 5));
+
+        listenTimer = new CountDownTimer(5000, 1000) {
+            @Override
+            public void onTick(long millisUntilFinished) {
+                bindButton.setText(getString(R.string.listening_countdown,
+                    (int) (millisUntilFinished / 1000)));
+            }
+
+            @Override
+            public void onFinish() {
+                finishListening(UNBOUND);
+            }
+        }.start();
+    }
+
+    private void finishListening(int keycode) {
+        isListening = false;
+        listenTimer.cancel();
+
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        prefs.edit().putInt(KEY_BOUND_KEYCODE, keycode).apply();
+
+        bindButton.setText(R.string.bind_key_button);
+        updateStatus();
+    }
+
+    private void updateStatus() {
+        if (statusText == null) return;
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        int bound = prefs.getInt(KEY_BOUND_KEYCODE, UNBOUND);
+        if (bound == UNBOUND) {
+            statusText.setText(R.string.status_current_none);
+        } else {
+            int nameRes = KEY_NAME_RES.get(bound);
+            String name = nameRes != 0
+                ? getString(nameRes)
+                : getString(R.string.keycode_unknown, bound);
+            statusText.setText(getString(R.string.status_current, name));
         }
     }
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (listeningBinding == null) return super.onKeyDown(keyCode, event);
+        if (!isListening) return super.onKeyDown(keyCode, event);
 
         // Ignore generic Virtual Keyboard keycode (it's a placeholder)
         if (keyCode == KeyEvent.KEYCODE_UNKNOWN) return true;
 
-        // The scan code is recorded alongside the key code: it is what the
-        // immersive-mode root helper matches on, and it is the only identity a
-        // key like Volume Up has once Android is out of the picture.
-        listeningBinding.bind(keyCode, event.getScanCode());
-        Log.i(TAG, "Bound keycode: " + keyCode + " scancode: " + event.getScanCode());
+        finishListening(keyCode);
+        Log.i(TAG, "Bound keycode: " + keyCode);
         return true;
     }
 
@@ -1275,7 +1166,7 @@ public class SettingsActivity extends Activity {
     private void updateLayoutStatus(TextView status, String json) {
         if (json == null || json.trim().isEmpty()) {
             status.setText(R.string.layout_status_default);
-            status.setTextColor(Color.GRAY);
+            status.setTextColor(colorTextSecondary);
             return;
         }
         String err = ExtraKeysBar.validateLayout(json);

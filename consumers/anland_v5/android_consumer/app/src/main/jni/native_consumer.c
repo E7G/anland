@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <dirent.h>
 #include <unistd.h>
 
@@ -22,7 +23,6 @@
 #include "native_audio.h"
 #include "protocol.h"
 #include "socket_utils.h"
-#include "tracy_zones.h"
 
 #define TAG "Anland"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -247,9 +247,7 @@ static void *event_thread_func(void *arg)
         }
 
         struct OutputEvent ev;
-        TracyCZoneN(zPoll, "poll_output_event", 1);
         int ret = poll_output_event(s->ctx, &ev, 500);
-        TracyCZoneEnd(zPoll);
         if (ret <= 0)
             continue;
 
@@ -539,6 +537,7 @@ static void on_fallback(void *userdata)
             jmethodID mid = (*env)->GetMethodID(env, cls, "onFallback", "()V");
             if (mid)
                 (*env)->CallVoidMethod(env, s->activity_obj, mid);
+            (*env)->DeleteLocalRef(env, cls);
         }
         if (attached)
             (*g_jvm)->DetachCurrentThread(g_jvm);
@@ -557,6 +556,7 @@ static void on_fallback(void *userdata)
             jmethodID mid = (*env)->GetMethodID(env, cls, "nativeClipListening", "(Z)V");
             if (mid)
                 (*env)->CallVoidMethod(env, s->clipboard_obj, mid, JNI_FALSE);
+            (*env)->DeleteLocalRef(env, cls);
         }
         if (attached)
             (*g_jvm)->DetachCurrentThread(g_jvm);
@@ -600,12 +600,11 @@ static void *render_thread_func(void *arg)
     LOGI("render thread started");
 
     while (s->running) {
+        struct timespec frame_start;
+        clock_gettime(CLOCK_MONOTONIC, &frame_start);
         if (s->need_reconnect) {
             LOGI("reconnecting...");
-            TracyCZoneN(zConnect, "do_connect", 1);
-            int rc = do_connect(s);
-            TracyCZoneEnd(zConnect);
-            if (rc < 0) {
+            if (do_connect(s) < 0) {
                 usleep(500000);
                 continue;
             }
@@ -613,10 +612,7 @@ static void *render_thread_func(void *arg)
 
         ANativeWindowBuffer *anb = NULL;
         int acqfence = -1;
-        TracyCZoneN(zDequeue, "dequeueBuffer", 1);
-        int dq = api.dequeueBuffer(s->window, &anb, &acqfence);
-        TracyCZoneEnd(zDequeue);
-        if (dq != 0 || !anb) {
+        if (api.dequeueBuffer(s->window, &anb, &acqfence) != 0 || !anb) {
             usleep(16000);
             continue;
         }
@@ -624,11 +620,9 @@ static void *render_thread_func(void *arg)
          * already safe to write (SurfaceFlinger done reading the previous frame)
          * before we hand it to the producer. A sync_file fd signals POLLIN. */
         if (acqfence >= 0) {
-            TracyCZoneN(zAcqFence, "acquire fence wait", 1);
             struct pollfd fpfd = { .fd = acqfence, .events = POLLIN };
             poll(&fpfd, 1, 1000);
             close(acqfence);
-            TracyCZoneEnd(zAcqFence);
         }
 
         int idx = -1;
@@ -645,10 +639,7 @@ static void *render_thread_func(void *arg)
             continue;
         }
 
-        TracyCZoneN(zSelect, "select_dmabuf", 1);
-        int sel = select_dmabuf(s->ctx, idx);
-        TracyCZoneEnd(zSelect);
-        if (sel < 0) {
+        if (select_dmabuf(s->ctx, idx) < 0) {
             api.queueBuffer(s->window, anb, -1);
             usleep(16000);
             continue;
@@ -658,11 +649,30 @@ static void *render_thread_func(void *arg)
          * over data_fd (reverse). Queue with it so SurfaceFlinger waits GPU-side
          * before scanout -- this lets the producer submit before its GPU render
          * completes (no glFinish stall). rfence == -1 falls back to "ready now". */
-        TracyCZoneN(zRefresh, "refresh_done (producer render)", 1);
         int rfence = refresh_done(s->ctx);
-        TracyCZoneEnd(zRefresh);
         api.queueBuffer(s->window, anb, rfence);
-        TracyCFrameMark;
+
+        // BufferQueue usually provides vsync back-pressure, but fallback/reconnect
+        // paths may return immediately and previously spun a full CPU core. Cap the
+        // successful loop to the display refresh period without delaying a frame
+        // that already consumed that time.
+        struct timespec frame_end;
+        clock_gettime(CLOCK_MONOTONIC, &frame_end);
+        int64_t elapsed_signed = (int64_t)(frame_end.tv_sec - frame_start.tv_sec) * 1000000000LL
+                               + (int64_t)(frame_end.tv_nsec - frame_start.tv_nsec);
+        uint64_t elapsed_ns = elapsed_signed > 0 ? (uint64_t)elapsed_signed : 0;
+        uint32_t mhz = s->refresh_mhz ? s->refresh_mhz : 60000;
+        uint64_t period_ns = 1000000000000ULL / mhz;
+        if (period_ns < 8333333ULL)
+            period_ns = 8333333ULL;
+        if (elapsed_ns < period_ns) {
+            uint64_t remain = period_ns - elapsed_ns;
+            struct timespec delay = {
+                .tv_sec = (time_t)(remain / 1000000000ULL),
+                .tv_nsec = (long)(remain % 1000000000ULL),
+            };
+            nanosleep(&delay, NULL);
+        }
     }
 
     LOGI("render thread stopped");
@@ -1110,14 +1120,4 @@ Java_com_anland_consumer_Native_nativeSetAudioLatency(
     if (!s)
         return;
     audio_set_latency(s->audio, speakerMs, micMs);
-}
-
-JNIEXPORT void JNICALL
-Java_com_anland_consumer_Native_nativeSetAudioKeepalive(
-    JNIEnv *env, jclass clazz, jlong handle, jboolean enabled)
-{
-    struct consumer_state *s = STATE(handle);
-    if (!s)
-        return;
-    audio_set_keepalive(s->audio, enabled == JNI_TRUE);
 }
