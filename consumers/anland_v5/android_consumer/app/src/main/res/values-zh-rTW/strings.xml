@@ -21,10 +21,13 @@
     <string name="cat_connection_subtitle">socket、root、麥克風、相機與音訊延遲</string>
     <string name="cat_resolution_subtitle">輸出解析度與預設</string>
     <string name="cat_general_title">一般</string>
-    <string name="cat_general_subtitle">螢幕方向與設定通知</string>
+    <string name="cat_general_subtitle">螢幕方向、功耗與設定通知</string>
 
     <!-- Screen orientation -->
     <string name="section_orientation">螢幕方向</string>
+    <string name="section_power">功耗</string>
+    <string name="keep_screen_on_switch">保持螢幕常亮</string>
+    <string name="keep_screen_on_hint">預設關閉以省電。僅在 Android 自動熄屏會中斷長時間工作時開啟。</string>
     <string name="orientation_label">強制螢幕方向</string>
     <string-array name="orientation_options">
         <item>預設（跟隨系統）</item>

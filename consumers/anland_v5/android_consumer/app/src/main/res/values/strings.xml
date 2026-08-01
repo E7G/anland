@@ -21,10 +21,13 @@
     <string name="cat_connection_subtitle">Socket, root, mic, camera &amp; audio latency</string>
     <string name="cat_resolution_subtitle">Output resolution &amp; presets</string>
     <string name="cat_general_title">General</string>
-    <string name="cat_general_subtitle">Screen orientation &amp; settings notification</string>
+    <string name="cat_general_subtitle">Screen orientation, power &amp; settings notification</string>
 
     <!-- Screen orientation -->
     <string name="section_orientation">Screen Orientation</string>
+    <string name="section_power">Power</string>
+    <string name="keep_screen_on_switch">Keep screen on</string>
+    <string name="keep_screen_on_hint">Off by default to save battery. Turn on only when Android's normal screen timeout would interrupt a long task.</string>
     <string name="orientation_label">Force screen orientation</string>
     <string-array name="orientation_options">
         <item>Default (system)</item>
