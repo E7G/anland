@@ -66,6 +66,10 @@ public class MainActivity extends Activity
     // this guards that one-time init (see applyCameraState).
     private boolean cameraInited = false;
     private static final String DEFAULT_SOCKET_PATH = "/data/local/tmp/display_daemon.sock";
+    // Clover's KGSL 4.4 stack burns a full big core when KWin is paced at the
+    // panel's native 60 Hz. 30 Hz keeps touch usable while roughly halving idle
+    // compositor work; other devices retain their native refresh rate.
+    private static final float CLOVER_REFRESH_CAP_HZ = 30.0f;
     // Multi-instance launch parameters. A secondary window is started with these
     // Intent extras (see SecondaryActivity / SettingsActivity); the launcher icon
     // starts MainActivity with none, i.e. the default socket and window name "anland".
@@ -265,8 +269,16 @@ public class MainActivity extends Activity
 
     private void pushRefreshRate() {
         Display d = getDisplay();
-        if (d != null)
-            mNative.setRefreshRate(d.getRefreshRate());
+        if (d != null) {
+            float refreshRate = d.getRefreshRate();
+            String device = Build.DEVICE == null ? "" : Build.DEVICE;
+            String product = Build.PRODUCT == null ? "" : Build.PRODUCT;
+            if ("clover".equalsIgnoreCase(device)
+                    || product.toLowerCase(java.util.Locale.ROOT).contains("clover")) {
+                refreshRate = Math.min(refreshRate, CLOVER_REFRESH_CAP_HZ);
+            }
+            mNative.setRefreshRate(refreshRate);
+        }
     }
 
     // Push the current connection settings (socket path / root mode) to native
