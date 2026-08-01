@@ -56,6 +56,7 @@ public class MainActivity extends Activity
     private static final String KEY_USE_ROOT = "use_root";
     private static final String KEY_MIC_ENABLED = "mic_enabled";
     private static final String KEY_CAMERA_ENABLED = "camera_enabled";
+    private static final String KEY_KEEP_SCREEN_ON = "keep_screen_on";
     // Latency presets in ms; 0 = engine default. Shared with SettingsActivity.
     static final String KEY_SPEAKER_LATENCY_MS = "speaker_latency_ms";
     static final String KEY_MIC_LATENCY_MS = "mic_latency_ms";
@@ -420,7 +421,6 @@ public class MainActivity extends Activity
 
         clipboard = new Clipboard(this, mNative);
 
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
         // Take over inset handling: the IME insets are dispatched to our
         // OnApplyWindowInsetsListener (so we can resize the surface) instead of
@@ -1340,6 +1340,15 @@ public class MainActivity extends Activity
         if (mForceSettings) {
             finish();
             return;
+        }
+
+        // Let Android sleep by default. Keeping a 1920x1200 panel awake while the
+        // user is idle costs much more power than the desktop process itself.
+        if (getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getBoolean(KEY_KEEP_SCREEN_ON, false)) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         }
 
         // Show settings notification while in foreground, unless disabled in Settings.

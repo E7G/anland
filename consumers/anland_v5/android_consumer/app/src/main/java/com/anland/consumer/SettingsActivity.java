@@ -59,6 +59,7 @@ public class SettingsActivity extends Activity {
     private static final String KEY_EXTRA_KEYS_LAYOUT = "extra_keys_layout";
     private static final String KEY_KEYBOARD_FLOATING = "keyboard_floating";
     private static final String KEY_NOTIFICATION_ENABLED = "settings_notification";
+    private static final String KEY_KEEP_SCREEN_ON = "keep_screen_on";
     private static final String KEY_ORIENTATION = "screen_orientation";
     private static final String[] ORIENTATION_VALUES = {"default", "landscape", "portrait"};
     private static final String DEFAULT_SOCKET_PATH = "/data/local/tmp/display_daemon.sock";
@@ -319,6 +320,7 @@ public class SettingsActivity extends Activity {
         currentPage = Page.GENERAL;
         LinearLayout root = newPage(R.string.cat_general_title);
         buildOrientationSection(root);
+        buildPowerSection(root);
         buildNotificationSection(root);
         setContent(root);
     }
@@ -601,6 +603,34 @@ public class SettingsActivity extends Activity {
         notificationHint.setTextColor(colorTextSecondary);
         notificationHint.setPadding(0, dp(4), 0, dp(8));
         root.addView(notificationHint);
+    }
+
+    private void buildPowerSection(LinearLayout root) {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+
+        TextView header = new TextView(this);
+        header.setText(R.string.section_power);
+        header.setTextSize(16);
+        header.setTypeface(null, Typeface.BOLD);
+        header.setPadding(0, dp(20), 0, dp(8));
+        root.addView(header);
+
+        Switch keepScreenOn = new Switch(this);
+        keepScreenOn.setText(R.string.keep_screen_on_switch);
+        keepScreenOn.setTextSize(14);
+        keepScreenOn.setPadding(0, dp(8), 0, 0);
+        keepScreenOn.setChecked(prefs.getBoolean(KEY_KEEP_SCREEN_ON, false));
+        keepScreenOn.setOnCheckedChangeListener((v, checked) ->
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putBoolean(KEY_KEEP_SCREEN_ON, checked).apply());
+        root.addView(keepScreenOn);
+
+        TextView hint = new TextView(this);
+        hint.setText(R.string.keep_screen_on_hint);
+        hint.setTextSize(12);
+        hint.setTextColor(colorTextSecondary);
+        hint.setPadding(0, dp(4), 0, dp(8));
+        root.addView(hint);
     }
 
     // ============================================================
