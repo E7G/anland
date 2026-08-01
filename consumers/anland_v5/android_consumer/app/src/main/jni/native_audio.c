@@ -194,7 +194,7 @@ static void *play_thread_func(void *arg)
         int fd = current_fd(b);
         if (fd < 0) {
             had_fd = false;
-            usleep(20000);
+            usleep(100000);
             continue;
         }
 
@@ -214,7 +214,7 @@ static void *play_thread_func(void *arg)
         if (poll(&pfd, 1, 200) <= 0)
             continue;
         if (pfd.revents & (POLLHUP | POLLERR)) {
-            usleep(20000);
+            usleep(100000);
             continue;
         }
 
@@ -273,11 +273,11 @@ static void *cap_thread_func(void *arg)
                 AAudioStream_requestStop(b->rec);
                 started = false;
             }
-            usleep(20000);
+            usleep(100000);
             continue;
         }
         if (!b->rec) {
-            usleep(20000);
+            usleep(100000);
             continue;
         }
         if (!started) {

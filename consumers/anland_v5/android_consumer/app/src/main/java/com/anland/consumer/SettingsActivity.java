@@ -78,6 +78,12 @@ public class SettingsActivity extends Activity {
     // in the R.array.latency_labels string-array, parallel to this array.
     private static final int[] LATENCY_MS = {0, 1, 3, 5, 10, 20};
 
+    private int colorBackground;
+    private int colorTextPrimary;
+    private int colorTextSecondary;
+    private int colorAccent;
+    private int colorDivider;
+
     // Which secondary page is on screen. Back returns HOME -> exits the activity.
     private enum Page { HOME, KEYBOARD, TOUCHPAD, CONNECTION, RESOLUTION, GENERAL }
     private Page currentPage = Page.HOME;
@@ -112,7 +118,21 @@ public class SettingsActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        colorBackground = themeColor(android.R.attr.colorBackground, Color.WHITE);
+        colorTextPrimary = themeColor(android.R.attr.textColorPrimary, Color.BLACK);
+        colorTextSecondary = themeColor(android.R.attr.textColorSecondary, Color.GRAY);
+        colorAccent = themeColor(android.R.attr.colorAccent, 0xFF42A5F5);
+        int control = themeColor(android.R.attr.colorControlNormal, colorTextSecondary);
+        colorDivider = (control & 0x00FFFFFF) | 0x33000000;
         showHome();
+    }
+
+    private int themeColor(int attribute, int fallback) {
+        android.content.res.TypedArray values =
+            obtainStyledAttributes(new int[]{attribute});
+        int color = values.getColor(0, fallback);
+        values.recycle();
+        return color;
     }
 
     // ============================================================
@@ -124,7 +144,8 @@ public class SettingsActivity extends Activity {
     // and install it. Reused by the home list and every secondary page.
     private void setContent(final LinearLayout content) {
         ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(Color.WHITE);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(colorBackground);
         scroll.addView(content);
         setContentView(scroll);
 
@@ -143,6 +164,10 @@ public class SettingsActivity extends Activity {
                          base + in.right, base + in.bottom);
             return insets;
         });
+        // Insets have usually already been dispatched when switching a category.
+        // Request them for every new page; otherwise Android 15/16 can measure the
+        // replacement content as an empty edge-to-edge view until the next rotation.
+        content.post(content::requestApplyInsets);
     }
 
     private void showHome() {
@@ -206,13 +231,13 @@ public class SettingsActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(titleRes);
         t.setTextSize(18);
-        t.setTextColor(Color.BLACK);
+        t.setTextColor(colorTextPrimary);
         texts.addView(t);
 
         TextView s = new TextView(this);
         s.setText(subtitleRes);
         s.setTextSize(13);
-        s.setTextColor(Color.GRAY);
+        s.setTextColor(colorTextSecondary);
         s.setPadding(0, dp(2), 0, 0);
         texts.addView(s);
 
@@ -221,7 +246,7 @@ public class SettingsActivity extends Activity {
         TextView chevron = new TextView(this);
         chevron.setText("›");
         chevron.setTextSize(22);
-        chevron.setTextColor(Color.GRAY);
+        chevron.setTextColor(colorTextSecondary);
         row.addView(chevron);
 
         parent.addView(row);
@@ -229,7 +254,7 @@ public class SettingsActivity extends Activity {
         View divider = new View(this);
         divider.setLayoutParams(new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, dp(1))));
-        divider.setBackgroundColor(0xFFE0E0E0);
+        divider.setBackgroundColor(colorDivider);
         parent.addView(divider);
     }
 
@@ -241,7 +266,7 @@ public class SettingsActivity extends Activity {
         TextView back = new TextView(this);
         back.setText(R.string.nav_back);
         back.setTextSize(16);
-        back.setTextColor(0xFF1565C0);
+        back.setTextColor(colorAccent);
         back.setPadding(0, 0, 0, dp(12));
         back.setClickable(true);
         back.setOnClickListener(v -> showHome());
@@ -324,7 +349,7 @@ public class SettingsActivity extends Activity {
 
         statusText = new TextView(this);
         statusText.setTextSize(14);
-        statusText.setTextColor(Color.GRAY);
+        statusText.setTextColor(colorTextSecondary);
         statusText.setPadding(0, 0, 0, dp(16));
         root.addView(statusText);
 
@@ -356,7 +381,7 @@ public class SettingsActivity extends Activity {
         TextView accessibilityHint = new TextView(this);
         accessibilityHint.setText(R.string.accessibility_hint);
         accessibilityHint.setTextSize(12);
-        accessibilityHint.setTextColor(Color.GRAY);
+        accessibilityHint.setTextColor(colorTextSecondary);
         accessibilityHint.setPadding(0, dp(4), 0, dp(8));
         root.addView(accessibilityHint);
     }
@@ -403,7 +428,7 @@ public class SettingsActivity extends Activity {
         TextView modeHint = new TextView(this);
         modeHint.setText(R.string.extra_keys_mode_hint);
         modeHint.setTextSize(12);
-        modeHint.setTextColor(Color.GRAY);
+        modeHint.setTextColor(colorTextSecondary);
         modeHint.setPadding(0, dp(4), 0, dp(8));
         root.addView(modeHint);
 
@@ -421,7 +446,7 @@ public class SettingsActivity extends Activity {
         TextView backOpensExtraKeysHint = new TextView(this);
         backOpensExtraKeysHint.setText(R.string.back_opens_hint);
         backOpensExtraKeysHint.setTextSize(12);
-        backOpensExtraKeysHint.setTextColor(Color.GRAY);
+        backOpensExtraKeysHint.setTextColor(colorTextSecondary);
         backOpensExtraKeysHint.setPadding(0, dp(4), 0, dp(8));
         root.addView(backOpensExtraKeysHint);
 
@@ -439,7 +464,7 @@ public class SettingsActivity extends Activity {
         TextView keyboardFloatingHint = new TextView(this);
         keyboardFloatingHint.setText(R.string.keyboard_floating_hint);
         keyboardFloatingHint.setTextSize(12);
-        keyboardFloatingHint.setTextColor(Color.GRAY);
+        keyboardFloatingHint.setTextColor(colorTextSecondary);
         keyboardFloatingHint.setPadding(0, dp(4), 0, dp(8));
         root.addView(keyboardFloatingHint);
     }
@@ -503,7 +528,7 @@ public class SettingsActivity extends Activity {
         TextView layoutHint = new TextView(this);
         layoutHint.setText(R.string.layout_hint);
         layoutHint.setTextSize(12);
-        layoutHint.setTextColor(Color.GRAY);
+        layoutHint.setTextColor(colorTextSecondary);
         layoutHint.setPadding(0, dp(4), 0, dp(8));
         root.addView(layoutHint);
     }
@@ -573,7 +598,7 @@ public class SettingsActivity extends Activity {
         TextView notificationHint = new TextView(this);
         notificationHint.setText(R.string.notification_hint);
         notificationHint.setTextSize(12);
-        notificationHint.setTextColor(Color.GRAY);
+        notificationHint.setTextColor(colorTextSecondary);
         notificationHint.setPadding(0, dp(4), 0, dp(8));
         root.addView(notificationHint);
     }
@@ -598,7 +623,7 @@ public class SettingsActivity extends Activity {
         TextView touchpadHint = new TextView(this);
         touchpadHint.setText(R.string.touchpad_hint);
         touchpadHint.setTextSize(12);
-        touchpadHint.setTextColor(Color.GRAY);
+        touchpadHint.setTextColor(colorTextSecondary);
         touchpadHint.setPadding(0, dp(4), 0, dp(12));
         root.addView(touchpadHint);
 
@@ -617,7 +642,7 @@ public class SettingsActivity extends Activity {
         TextView pointerCaptureHint = new TextView(this);
         pointerCaptureHint.setText(R.string.pointer_capture_hint);
         pointerCaptureHint.setTextSize(12);
-        pointerCaptureHint.setTextColor(Color.GRAY);
+        pointerCaptureHint.setTextColor(colorTextSecondary);
         pointerCaptureHint.setPadding(0, dp(4), 0, dp(12));
         root.addView(pointerCaptureHint);
 
@@ -633,7 +658,7 @@ public class SettingsActivity extends Activity {
 
         final TextView accelValue = new TextView(this);
         accelValue.setTextSize(14);
-        accelValue.setTextColor(Color.BLUE);
+        accelValue.setTextColor(colorAccent);
         accelLayout.addView(accelValue);
 
         SeekBar accelSeek = new SeekBar(this);
@@ -670,7 +695,7 @@ public class SettingsActivity extends Activity {
         TextView reverseScrollHint = new TextView(this);
         reverseScrollHint.setText(R.string.scroll_reverse_hint);
         reverseScrollHint.setTextSize(12);
-        reverseScrollHint.setTextColor(Color.GRAY);
+        reverseScrollHint.setTextColor(colorTextSecondary);
         reverseScrollHint.setPadding(0, dp(4), 0, dp(12));
         root.addView(reverseScrollHint);
 
@@ -708,7 +733,7 @@ public class SettingsActivity extends Activity {
 
         final TextView value = new TextView(this);
         value.setTextSize(14);
-        value.setTextColor(Color.BLUE);
+        value.setTextColor(colorAccent);
         layout.addView(value);
 
         SeekBar seek = new SeekBar(this);
@@ -734,7 +759,7 @@ public class SettingsActivity extends Activity {
             TextView hint = new TextView(this);
             hint.setText(hintRes);
             hint.setTextSize(12);
-            hint.setTextColor(Color.GRAY);
+            hint.setTextColor(colorTextSecondary);
             hint.setPadding(0, dp(2), 0, dp(12));
             root.addView(hint);
         }
@@ -750,7 +775,7 @@ public class SettingsActivity extends Activity {
         TextView sockLabel = new TextView(this);
         sockLabel.setText(R.string.socket_path_label);
         sockLabel.setTextSize(14);
-        sockLabel.setTextColor(Color.GRAY);
+        sockLabel.setTextColor(colorTextSecondary);
         sockLabel.setPadding(0, 0, 0, dp(4));
         root.addView(sockLabel);
 
@@ -774,7 +799,7 @@ public class SettingsActivity extends Activity {
         TextView secLabel = new TextView(this);
         secLabel.setText(R.string.second_window_label);
         secLabel.setTextSize(14);
-        secLabel.setTextColor(Color.GRAY);
+        secLabel.setTextColor(colorTextSecondary);
         secLabel.setPadding(0, dp(16), 0, dp(4));
         root.addView(secLabel);
 
@@ -815,7 +840,7 @@ public class SettingsActivity extends Activity {
         TextView rootHint = new TextView(this);
         rootHint.setText(R.string.root_hint);
         rootHint.setTextSize(12);
-        rootHint.setTextColor(Color.GRAY);
+        rootHint.setTextColor(colorTextSecondary);
         rootHint.setPadding(0, dp(4), 0, 0);
         root.addView(rootHint);
 
@@ -835,7 +860,7 @@ public class SettingsActivity extends Activity {
         TextView micHint = new TextView(this);
         micHint.setText(R.string.mic_hint);
         micHint.setTextSize(12);
-        micHint.setTextColor(Color.GRAY);
+        micHint.setTextColor(colorTextSecondary);
         micHint.setPadding(0, dp(4), 0, 0);
         root.addView(micHint);
 
@@ -856,7 +881,7 @@ public class SettingsActivity extends Activity {
         TextView cameraHint = new TextView(this);
         cameraHint.setText(R.string.camera_hint);
         cameraHint.setTextSize(12);
-        cameraHint.setTextColor(Color.GRAY);
+        cameraHint.setTextColor(colorTextSecondary);
         cameraHint.setPadding(0, dp(4), 0, 0);
         root.addView(cameraHint);
 
@@ -878,7 +903,7 @@ public class SettingsActivity extends Activity {
         TextView latHint = new TextView(this);
         latHint.setText(R.string.latency_hint);
         latHint.setTextSize(12);
-        latHint.setTextColor(Color.GRAY);
+        latHint.setTextColor(colorTextSecondary);
         latHint.setPadding(0, dp(4), 0, 0);
         root.addView(latHint);
     }
@@ -947,7 +972,7 @@ public class SettingsActivity extends Activity {
     TextView hint = new TextView(this);
     hint.setText(R.string.resolution_hint);
     hint.setTextSize(12);
-    hint.setTextColor(Color.GRAY);
+    hint.setTextColor(colorTextSecondary);
     hint.setPadding(0, dp(4), 0, 0);
     root.addView(hint);
 
@@ -963,7 +988,7 @@ public class SettingsActivity extends Activity {
     TextView autoStretchHint = new TextView(this);
     autoStretchHint.setText(R.string.auto_stretch_hint);
     autoStretchHint.setTextSize(12);
-    autoStretchHint.setTextColor(Color.GRAY);
+    autoStretchHint.setTextColor(colorTextSecondary);
     autoStretchHint.setPadding(0, dp(4), 0, 0);
     root.addView(autoStretchHint);
     }
@@ -1141,7 +1166,7 @@ public class SettingsActivity extends Activity {
     private void updateLayoutStatus(TextView status, String json) {
         if (json == null || json.trim().isEmpty()) {
             status.setText(R.string.layout_status_default);
-            status.setTextColor(Color.GRAY);
+            status.setTextColor(colorTextSecondary);
             return;
         }
         String err = ExtraKeysBar.validateLayout(json);

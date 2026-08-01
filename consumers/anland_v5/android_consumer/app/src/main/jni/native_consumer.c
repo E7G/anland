@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <dirent.h>
 #include <unistd.h>
 
@@ -536,6 +537,7 @@ static void on_fallback(void *userdata)
             jmethodID mid = (*env)->GetMethodID(env, cls, "onFallback", "()V");
             if (mid)
                 (*env)->CallVoidMethod(env, s->activity_obj, mid);
+            (*env)->DeleteLocalRef(env, cls);
         }
         if (attached)
             (*g_jvm)->DetachCurrentThread(g_jvm);
@@ -554,6 +556,7 @@ static void on_fallback(void *userdata)
             jmethodID mid = (*env)->GetMethodID(env, cls, "nativeClipListening", "(Z)V");
             if (mid)
                 (*env)->CallVoidMethod(env, s->clipboard_obj, mid, JNI_FALSE);
+            (*env)->DeleteLocalRef(env, cls);
         }
         if (attached)
             (*g_jvm)->DetachCurrentThread(g_jvm);
@@ -597,6 +600,8 @@ static void *render_thread_func(void *arg)
     LOGI("render thread started");
 
     while (s->running) {
+        struct timespec frame_start;
+        clock_gettime(CLOCK_MONOTONIC, &frame_start);
         if (s->need_reconnect) {
             LOGI("reconnecting...");
             if (do_connect(s) < 0) {
@@ -646,6 +651,28 @@ static void *render_thread_func(void *arg)
          * completes (no glFinish stall). rfence == -1 falls back to "ready now". */
         int rfence = refresh_done(s->ctx);
         api.queueBuffer(s->window, anb, rfence);
+
+        // BufferQueue usually provides vsync back-pressure, but fallback/reconnect
+        // paths may return immediately and previously spun a full CPU core. Cap the
+        // successful loop to the display refresh period without delaying a frame
+        // that already consumed that time.
+        struct timespec frame_end;
+        clock_gettime(CLOCK_MONOTONIC, &frame_end);
+        int64_t elapsed_signed = (int64_t)(frame_end.tv_sec - frame_start.tv_sec) * 1000000000LL
+                               + (int64_t)(frame_end.tv_nsec - frame_start.tv_nsec);
+        uint64_t elapsed_ns = elapsed_signed > 0 ? (uint64_t)elapsed_signed : 0;
+        uint32_t mhz = s->refresh_mhz ? s->refresh_mhz : 60000;
+        uint64_t period_ns = 1000000000000ULL / mhz;
+        if (period_ns < 8333333ULL)
+            period_ns = 8333333ULL;
+        if (elapsed_ns < period_ns) {
+            uint64_t remain = period_ns - elapsed_ns;
+            struct timespec delay = {
+                .tv_sec = (time_t)(remain / 1000000000ULL),
+                .tv_nsec = (long)(remain % 1000000000ULL),
+            };
+            nanosleep(&delay, NULL);
+        }
     }
 
     LOGI("render thread stopped");

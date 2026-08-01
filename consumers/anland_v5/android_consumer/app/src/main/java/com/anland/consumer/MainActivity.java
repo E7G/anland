@@ -16,6 +16,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.util.SparseArray;
+import android.util.SparseBooleanArray;
 import android.view.Display;
 import android.view.Gravity;
 import android.view.InputDevice;
@@ -41,6 +42,7 @@ public class MainActivity extends Activity
     private static final String TAG = "Anland";
 
     private SurfaceView surfaceView;
+    private final SparseBooleanArray activeTouchPointers = new SparseBooleanArray();
     private boolean surfaceReady = false;
     // System-clipboard bridge; also the target for the native clipboard callbacks.
     private Clipboard clipboard;
@@ -431,6 +433,10 @@ public class MainActivity extends Activity
         // intercepts them before the focused child handles them.
         surfaceView.setFocusable(true);
         surfaceView.setFocusableInTouchMode(true);
+        // SurfaceView can consume ACTION_DOWN before Activity.onTouchEvent sees it.
+        // Owning the complete touchscreen stream here keeps DOWN/MOVE/UP ordered,
+        // which is required by KWin touch gestures such as Plasma Mobile swipe-up.
+        surfaceView.setOnTouchListener((view, event) -> onTouchEvent(event));
         systemIme = new SystemIME(this, this, mNative);
 
         // Pointer-captured mouse/touchpad events are dispatched by ViewRootImpl to the
@@ -1423,6 +1429,7 @@ public class MainActivity extends Activity
         if (dm != null)
             dm.unregisterDisplayListener(displayListener);
         mNative.stop();
+        activeTouchPointers.clear();
     }
 
     @Override
@@ -2144,6 +2151,7 @@ public class MainActivity extends Activity
             case MotionEvent.ACTION_DOWN:
             case MotionEvent.ACTION_POINTER_DOWN:
                 float[] downCoords = convertToNativeCoords(event.getX(pointerIdx), event.getY(pointerIdx));
+                activeTouchPointers.put(pointerId, true);
                 mNative.sendTouch(0, downCoords[0], downCoords[1], pointerId);
                 mNative.sendTouchFrame();
                 return true;
@@ -2151,14 +2159,26 @@ public class MainActivity extends Activity
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_POINTER_UP:
                 float[] upCoords = convertToNativeCoords(event.getX(pointerIdx), event.getY(pointerIdx));
+                if (!activeTouchPointers.get(pointerId))
+                    mNative.sendTouch(0, upCoords[0], upCoords[1], pointerId);
                 mNative.sendTouch(1, upCoords[0], upCoords[1], pointerId);
+                activeTouchPointers.delete(pointerId);
                 mNative.sendTouchFrame();
                 return true;
             
             case MotionEvent.ACTION_MOVE:
                 for (int i = 0; i < event.getPointerCount(); i++) {
                     float[] moveCoords = convertToNativeCoords(event.getX(i), event.getY(i));
-                    mNative.sendTouch(2, moveCoords[0], moveCoords[1], event.getPointerId(i));
+                    int moveId = event.getPointerId(i);
+                    // Recover cleanly if Android began dispatching mid-gesture after
+                    // a Surface/Activity transition instead of poisoning KWin's
+                    // touch sequence with MOVE-without-DOWN events.
+                    if (!activeTouchPointers.get(moveId)) {
+                        activeTouchPointers.put(moveId, true);
+                        mNative.sendTouch(0, moveCoords[0], moveCoords[1], moveId);
+                    } else {
+                        mNative.sendTouch(2, moveCoords[0], moveCoords[1], moveId);
+                    }
                 }
                 mNative.sendTouchFrame();
                 return true;
@@ -2166,8 +2186,11 @@ public class MainActivity extends Activity
             case MotionEvent.ACTION_CANCEL:
                 for (int i = 0; i < event.getPointerCount(); i++) {
                     float[] cancelCoords = convertToNativeCoords(event.getX(i), event.getY(i));
-                    mNative.sendTouch(1, cancelCoords[0], cancelCoords[1], event.getPointerId(i));
+                    int cancelId = event.getPointerId(i);
+                    if (activeTouchPointers.get(cancelId))
+                        mNative.sendTouch(1, cancelCoords[0], cancelCoords[1], cancelId);
                 }
+                activeTouchPointers.clear();
                 mNative.sendTouchFrame();
                 return true;
         }
