@@ -50,6 +50,10 @@ public final class SystemIME {
     private final Native mNative;
     private InputMethodManager imm;
     private EditText hiddenInput;
+    private boolean imeRequestPending;
+    private boolean imeVisibleHint;
+    private int imeRequestSerial;
+    private static final long[] IME_RETRY_DELAYS_MS = {0, 50, 150, 300, 600, 1000};
 
     SystemIME(Activity activity, Host host, Native n) {
         this.activity = activity;
@@ -347,10 +351,22 @@ public final class SystemIME {
 
     boolean isImeVisible() {
         WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
-        return insets != null && insets.isVisible(WindowInsets.Type.ime());
+        return imeVisibleHint || (insets != null && insets.isVisible(WindowInsets.Type.ime()));
+    }
+
+    void onImeInsetsChanged(boolean visible) {
+        imeVisibleHint = visible;
+        if (visible) imeRequestPending = false;
+    }
+
+    boolean isImeRequestPending() {
+        return imeRequestPending;
     }
 
     void releaseHiddenInput() {
+        imeRequestSerial++;
+        imeRequestPending = false;
+        imeVisibleHint = false;
         if (!hiddenInput.isEnabled()) return;  // already released
         hiddenInput.clearFocus();
         hiddenInput.setFocusable(false);
@@ -369,36 +385,49 @@ public final class SystemIME {
             // explicitly so it tracks the IME state in all modes.
             host.onImeVisibilityChanged(false);
         } else {
-            hiddenInput.setEnabled(true);
-            hiddenInput.setFocusable(true);
-            hiddenInput.setFocusableInTouchMode(true);
-            hiddenInput.requestFocus();
-            // A secondary window is a fresh freeform/multi-window task: the IMM
-            // registers hiddenInput as its served view asynchronously on the focus
-            // change, so an immediate showSoftInput() here races that and no-ops.
-            // Post the request so it runs after focus settles, and retry once if the
-            // IME wasn't actually shown — the system also drops some SHOW_IMPLICIT
-            // requests for windows that aren't the current full input target.
-            hiddenInput.post(() -> {
-                if (!hiddenInput.hasWindowFocus()) hiddenInput.requestFocus();
-                imm.showSoftInput(hiddenInput, InputMethodManager.SHOW_IMPLICIT,
-                    new android.os.ResultReceiver(hiddenInput.getHandler()) {
-                        @Override
-                        protected void onReceiveResult(int resultCode, android.os.Bundle data) {
-                            if (resultCode == InputMethodManager.RESULT_UNCHANGED_HIDDEN
-                                    || resultCode == InputMethodManager.RESULT_HIDDEN) {
-                                hiddenInput.postDelayed(() ->
-                                    imm.showSoftInput(hiddenInput,
-                                        InputMethodManager.SHOW_IMPLICIT), 50);
-                            }
-                        }
-                    });
-            });
-            // In freeform / small-window mode the IME appears as a floating
-            // window that does NOT trigger window insets, so applyImeInset()
-            // is never called and the extra-keys bar stays hidden.  Show it
-            // explicitly here so the bar appears alongside the IME in all modes.
-            host.onImeVisibilityChanged(true);
+            showSystemKeyboard();
         }
+    }
+
+    void showSystemKeyboard() {
+        if (imm == null) imm = activity.getSystemService(InputMethodManager.class);
+        if (imm == null || isImeVisible() || imeRequestPending) return;
+
+        hiddenInput.setEnabled(true);
+        hiddenInput.setFocusable(true);
+        hiddenInput.setFocusableInTouchMode(true);
+        hiddenInput.requestFocus();
+        imeRequestPending = true;
+        final int serial = ++imeRequestSerial;
+        for (int i = 0; i < IME_RETRY_DELAYS_MS.length; i++) {
+            final int attempt = i;
+            hiddenInput.postDelayed(() -> attemptShowIme(serial, attempt),
+                IME_RETRY_DELAYS_MS[i]);
+        }
+        host.onImeVisibilityChanged(true);
+    }
+
+    private void attemptShowIme(int serial, int attempt) {
+        if (serial != imeRequestSerial || !imeRequestPending || !hiddenInput.isEnabled())
+            return;
+        if (!hiddenInput.hasWindowFocus()) hiddenInput.requestFocus();
+        imm.showSoftInput(hiddenInput, InputMethodManager.SHOW_IMPLICIT,
+            new android.os.ResultReceiver(hiddenInput.getHandler()) {
+                @Override
+                protected void onReceiveResult(int resultCode, android.os.Bundle data) {
+                    if (serial != imeRequestSerial || !imeRequestPending) return;
+                    if (resultCode == InputMethodManager.RESULT_SHOWN
+                            || resultCode == InputMethodManager.RESULT_UNCHANGED_SHOWN) {
+                        imeRequestPending = false;
+                        imeVisibleHint = true;
+                    } else if (attempt == IME_RETRY_DELAYS_MS.length - 1) {
+                        imeRequestPending = false;
+                        if (!isImeVisible()) {
+                            releaseHiddenInput();
+                            host.onImeVisibilityChanged(false);
+                        }
+                    }
+                }
+            });
     }
 }

@@ -111,6 +111,7 @@ public class MainActivity extends Activity
     private float surfaceScale = 1f;
     // System soft-keyboard bridge: hidden input, text forwarding and toggle.
     private SystemIME systemIme;
+    private boolean autoImeRequested = false;
     private int mImeBottom = 0;   // last IME bottom inset
     private int mBarHeight = 0;   // extra-keys bar height in px
     private ExtraKeysBar extraKeysBar;
@@ -538,7 +539,9 @@ public class MainActivity extends Activity
             // When the IME hides by any means (toggle, system back, or the IME's
             // own close button), release the hidden input so its focus state
             // stays in sync — otherwise reopening needs a second press.
-            if (!insets.isVisible(WindowInsets.Type.ime())) {
+            boolean imeVisible = insets.isVisible(WindowInsets.Type.ime());
+            systemIme.onImeInsetsChanged(imeVisible);
+            if (!imeVisible && !systemIme.isImeRequestPending()) {
                 View focused = getCurrentFocus();
                 systemIme.releaseHiddenInput();
                 if (focused == systemIme.getInputView() || getCurrentFocus() == null)
@@ -1570,6 +1573,13 @@ public class MainActivity extends Activity
         pushRefreshRate();
         applyMicState();
         applyAudioLatency();
+        if (!autoImeRequested && mRoot != null) {
+            autoImeRequested = true;
+            mRoot.postDelayed(() -> {
+                if (surfaceReady && systemIme != null)
+                    systemIme.showSystemKeyboard();
+            }, 700);
+        }
 
         // ===== 更新屏幕尺寸并重置平滑状态 =====
         updateTouchpadBounds(null);
