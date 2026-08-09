@@ -388,14 +388,19 @@ public final class SystemIME {
         if (imm == null) imm = activity.getSystemService(InputMethodManager.class);
         if (imm == null) return;
         if (isImeVisible()) {
-            imm.hideSoftInputFromWindow(hiddenInput.getWindowToken(), 0);
-            releaseHiddenInput();
-            // In freeform mode the inset callback may not fire; hide the bar
-            // explicitly so it tracks the IME state in all modes.
-            host.onImeVisibilityChanged(false);
+            hideSystemKeyboard();
         } else {
             showSystemKeyboard();
         }
+    }
+
+    void hideSystemKeyboard() {
+        if (imm == null) imm = activity.getSystemService(InputMethodManager.class);
+        if (imm != null)
+            imm.hideSoftInputFromWindow(hiddenInput.getWindowToken(), 0);
+        releaseHiddenInput();
+        // Freeform/vendor keyboards do not always dispatch a final hidden inset.
+        host.onImeVisibilityChanged(false);
     }
 
     void showSystemKeyboard() {

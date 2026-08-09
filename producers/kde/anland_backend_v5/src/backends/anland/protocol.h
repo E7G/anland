@@ -161,6 +161,8 @@ struct OutputEvent{
 /* 1 = force-enable Android pointer capture (Wayland zwp_locked_pointer_v1 active,
  *   a game grabbed the mouse for relative motion); 0 = release. */
 #define CONSUMER_VAR_CAPTURE_MOUSE 1
+/* Show/hide Android's system IME when a producer text field gains/loses focus. */
+#define CONSUMER_VAR_ANDROID_IME 2
 
 /*
  * Audio runs on its own dedicated bidirectional socketpair (hello fd slot 4),
