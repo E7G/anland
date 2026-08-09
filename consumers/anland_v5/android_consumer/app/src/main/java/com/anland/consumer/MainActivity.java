@@ -107,7 +107,8 @@ public class MainActivity extends Activity
     private float surfaceScale = 1f;
     // System soft-keyboard bridge: hidden input, text forwarding and toggle.
     private SystemIME systemIme;
-    private boolean autoImeRequested = false;
+    // Monotonic token cancels a delayed producer-requested hide when focus returns.
+    private int androidImeRequestSerial = 0;
     private int mImeBottom = 0;   // last IME bottom inset
     private int mBarHeight = 0;   // extra-keys bar height in px
     private ExtraKeysBar extraKeysBar;
@@ -166,6 +167,7 @@ public class MainActivity extends Activity
     // fallback; the producer resends the current value on reconnect.
     private volatile boolean captureMouseForced = false;
     private static final int CONSUMER_VAR_CAPTURE_MOUSE = 1;
+    private static final int CONSUMER_VAR_ANDROID_IME = 2;
     // Tracks the Back key whose DOWN released pointer capture, so only its matching
     // UP is swallowed. Device/downTime matching prevents a stale missing UP from
     // consuming a later, unrelated Back press.
@@ -775,15 +777,25 @@ public class MainActivity extends Activity
         return pointerCaptureEnabled || captureMouseForced;
     }
 
-    /** Called from the native event thread when the producer sets a consumer var.
-     *  CONSUMER_VAR_CAPTURE_MOUSE forces pointer capture on (value != 0) for as long
-     *  as a Wayland client holds a pointer lock; 0 releases it back to the setting. */
+    /** Called from the native event thread when the producer sets a consumer var. */
     public void nativeSetConsumerVar(int var, int value) {
         runOnUiThread(() -> {
             if (var == CONSUMER_VAR_CAPTURE_MOUSE) {
                 captureMouseForced = (value != 0);
                 if (mRoot != null)
                     mRoot.post(this::syncPointerCapture);
+            } else if (var == CONSUMER_VAR_ANDROID_IME && systemIme != null) {
+                final int serial = ++androidImeRequestSerial;
+                if (value != 0) {
+                    systemIme.showSystemKeyboard();
+                } else if (mRoot != null) {
+                    // Resizing for IME insets can briefly toggle Linux text focus.
+                    // Delay hide; a following show request invalidates this token.
+                    mRoot.postDelayed(() -> {
+                        if (serial == androidImeRequestSerial && systemIme != null)
+                            systemIme.hideSystemKeyboard();
+                    }, 350);
+                }
             }
         });
     }
@@ -1566,14 +1578,6 @@ public class MainActivity extends Activity
         pushRefreshRate();
         applyMicState();
         applyAudioLatency();
-        if (!autoImeRequested && mRoot != null) {
-            autoImeRequested = true;
-            mRoot.postDelayed(() -> {
-                if (surfaceReady && systemIme != null)
-                    systemIme.showSystemKeyboard();
-            }, 700);
-        }
-
         // ===== 更新屏幕尺寸并重置平滑状态 =====
         updateTouchpadBounds(null);
         if (mRoot != null)

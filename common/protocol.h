@@ -88,6 +88,8 @@ struct buf_info {
  *   i.e. a game grabbed the mouse for relative motion); 0 = release back to the
  *   user setting. Overrides the pointer_capture setting while asserted. */
 #define CONSUMER_VAR_CAPTURE_MOUSE 1
+/* Show/hide Android's system IME when a producer text field gains/loses focus. */
+#define CONSUMER_VAR_ANDROID_IME 2
 
 
 
