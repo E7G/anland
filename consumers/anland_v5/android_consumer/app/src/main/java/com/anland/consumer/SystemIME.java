@@ -360,6 +360,10 @@ public final class SystemIME {
     }
 
     void onImeInsetsChanged(boolean visible) {
+        // Some ROMs dispatch one final "hidden" inset frame after IMM has
+        // accepted the show request.  Do not turn that transitional frame into a
+        // focus release; wait for visible insets or the bounded request timeout.
+        if (!visible && imeRequestPending) return;
         imeVisibleHint = visible;
         if (visible) imeRequestPending = false;
     }
@@ -441,7 +445,9 @@ public final class SystemIME {
                     if (serial != imeRequestSerial || !imeRequestPending) return;
                     if (resultCode == InputMethodManager.RESULT_SHOWN
                             || resultCode == InputMethodManager.RESULT_UNCHANGED_SHOWN) {
-                        imeRequestPending = false;
+                        // Keep the request pending until insets confirm visibility.
+                        // Floating vendor keyboards may not produce IME insets; the
+                        // timeout below then promotes this result hint to visible.
                         imeVisibleHint = true;
                         Log.i(TAG, "IME shown on attempt " + attempt);
                     }
@@ -453,7 +459,8 @@ public final class SystemIME {
         if (serial != imeRequestSerial || !imeRequestPending) return;
         imeRequestPending = false;
         WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
-        boolean visible = insets != null && insets.isVisible(WindowInsets.Type.ime());
+        boolean visible = imeVisibleHint
+            || (insets != null && insets.isVisible(WindowInsets.Type.ime()));
         imeVisibleHint = visible;
         if (!visible) {
             Log.w(TAG, "IME show timed out; next button tap may retry");
