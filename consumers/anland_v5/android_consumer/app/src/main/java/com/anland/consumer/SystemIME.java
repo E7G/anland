@@ -6,11 +6,13 @@ import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
+import android.util.Log;
 
 import java.nio.charset.StandardCharsets;
 
@@ -24,6 +26,8 @@ import java.nio.charset.StandardCharsets;
  * to read the active bar (for modifier combos) and to report visibility changes.
  */
 public final class SystemIME {
+
+    private static final String TAG = "AnlandSystemIME";
 
     /** Callback surface SystemIME needs from its host (MainActivity). */
     public interface Host {
@@ -54,6 +58,7 @@ public final class SystemIME {
     private boolean imeVisibleHint;
     private int imeRequestSerial;
     private static final long[] IME_RETRY_DELAYS_MS = {0, 50, 150, 300, 600, 1000};
+    private static final long IME_REQUEST_TIMEOUT_MS = 1400;
 
     SystemIME(Activity activity, Host host, Native n) {
         this.activity = activity;
@@ -391,12 +396,20 @@ public final class SystemIME {
 
     void showSystemKeyboard() {
         if (imm == null) imm = activity.getSystemService(InputMethodManager.class);
-        if (imm == null || isImeVisible() || imeRequestPending) return;
+        if (imm == null || isImeVisible()) return;
+
+        // A ResultReceiver callback is not guaranteed on every vendor IMM.  The
+        // previous implementation could therefore remain pending forever after
+        // its automatic startup request and make every later keyboard-button tap
+        // a no-op.  A new explicit request always supersedes a stale one.
+        imeRequestPending = false;
+        imeRequestSerial++;
 
         hiddenInput.setEnabled(true);
         hiddenInput.setFocusable(true);
         hiddenInput.setFocusableInTouchMode(true);
         hiddenInput.requestFocus();
+        imm.restartInput(hiddenInput);
         imeRequestPending = true;
         final int serial = ++imeRequestSerial;
         for (int i = 0; i < IME_RETRY_DELAYS_MS.length; i++) {
@@ -404,13 +417,23 @@ public final class SystemIME {
             hiddenInput.postDelayed(() -> attemptShowIme(serial, attempt),
                 IME_RETRY_DELAYS_MS[i]);
         }
+        hiddenInput.postDelayed(() -> finishTimedOutRequest(serial),
+            IME_REQUEST_TIMEOUT_MS);
         host.onImeVisibilityChanged(true);
     }
 
     private void attemptShowIme(int serial, int attempt) {
         if (serial != imeRequestSerial || !imeRequestPending || !hiddenInput.isEnabled())
             return;
-        if (!hiddenInput.hasWindowFocus()) hiddenInput.requestFocus();
+        if (!hiddenInput.hasWindowFocus() || !hiddenInput.hasFocus()) {
+            hiddenInput.requestFocus();
+            return;
+        }
+
+        // WindowInsetsController is the reliable path on Android 11+; keep IMM
+        // as a compatibility path and for vendor keyboards.
+        WindowInsetsController controller = hiddenInput.getWindowInsetsController();
+        if (controller != null) controller.show(WindowInsets.Type.ime());
         imm.showSoftInput(hiddenInput, InputMethodManager.SHOW_IMPLICIT,
             new android.os.ResultReceiver(hiddenInput.getHandler()) {
                 @Override
@@ -420,14 +443,22 @@ public final class SystemIME {
                             || resultCode == InputMethodManager.RESULT_UNCHANGED_SHOWN) {
                         imeRequestPending = false;
                         imeVisibleHint = true;
-                    } else if (attempt == IME_RETRY_DELAYS_MS.length - 1) {
-                        imeRequestPending = false;
-                        if (!isImeVisible()) {
-                            releaseHiddenInput();
-                            host.onImeVisibilityChanged(false);
-                        }
+                        Log.i(TAG, "IME shown on attempt " + attempt);
                     }
                 }
             });
+    }
+
+    private void finishTimedOutRequest(int serial) {
+        if (serial != imeRequestSerial || !imeRequestPending) return;
+        imeRequestPending = false;
+        WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+        boolean visible = insets != null && insets.isVisible(WindowInsets.Type.ime());
+        imeVisibleHint = visible;
+        if (!visible) {
+            Log.w(TAG, "IME show timed out; next button tap may retry");
+            releaseHiddenInput();
+            host.onImeVisibilityChanged(false);
+        }
     }
 }

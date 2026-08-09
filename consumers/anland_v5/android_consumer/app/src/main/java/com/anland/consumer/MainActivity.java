@@ -422,7 +422,12 @@ public class MainActivity extends Activity
 
         clipboard = new Clipboard(this, mNative);
 
-        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+        // Do not use STATE_ALWAYS_HIDDEN here.  It wins over explicit IME show
+        // requests on recent Android releases and leaves SystemIME's editor as the
+        // served view while the keyboard itself stays hidden.  We handle insets
+        // below, so only disable the platform's automatic resize/pan behaviour.
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_UNSPECIFIED
+            | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
         // Take over inset handling: the IME insets are dispatched to our
         // OnApplyWindowInsetsListener (so we can resize the surface) instead of
         // the system auto-panning the fullscreen window.
