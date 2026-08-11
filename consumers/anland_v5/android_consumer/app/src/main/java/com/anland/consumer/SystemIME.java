@@ -443,18 +443,23 @@ public final class SystemIME {
         // as a compatibility path and for vendor keyboards.
         WindowInsetsController controller = hiddenInput.getWindowInsetsController();
         if (controller != null) controller.show(WindowInsets.Type.ime());
-        imm.showSoftInput(hiddenInput, InputMethodManager.SHOW_IMPLICIT,
+        // Some Xiaomi/vendor IMEs accept an implicit request in the client but
+        // WindowManager later aborts it because Linux focus is not an Android
+        // user gesture. Retry the later attempts as explicit requests.
+        final int showFlags = attempt >= 2
+            ? InputMethodManager.SHOW_FORCED
+            : InputMethodManager.SHOW_IMPLICIT;
+        imm.showSoftInput(hiddenInput, showFlags,
             new android.os.ResultReceiver(hiddenInput.getHandler()) {
                 @Override
                 protected void onReceiveResult(int resultCode, android.os.Bundle data) {
                     if (serial != imeRequestSerial || !imeRequestPending) return;
                     if (resultCode == InputMethodManager.RESULT_SHOWN
                             || resultCode == InputMethodManager.RESULT_UNCHANGED_SHOWN) {
-                        // Keep the request pending until insets confirm visibility.
-                        // Floating vendor keyboards may not produce IME insets; the
-                        // timeout below then promotes this result hint to visible.
-                        imeVisibleHint = true;
-                        Log.i(TAG, "IME shown on attempt " + attempt);
+                        // ResultReceiver only means the IME accepted the request.
+                        // MIUI/Sogou can report SHOWN before WindowManager aborts
+                        // layout, so only visible insets may complete the request.
+                        Log.i(TAG, "IME request accepted on attempt " + attempt);
                     }
                 }
             });
@@ -464,8 +469,7 @@ public final class SystemIME {
         if (serial != imeRequestSerial || !imeRequestPending) return;
         imeRequestPending = false;
         WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
-        boolean visible = imeVisibleHint
-            || (insets != null && insets.isVisible(WindowInsets.Type.ime()));
+        boolean visible = insets != null && insets.isVisible(WindowInsets.Type.ime());
         imeVisibleHint = visible;
         if (!visible) {
             Log.w(TAG, "IME show timed out; next button tap may retry");
