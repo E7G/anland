@@ -11,6 +11,7 @@ import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.hardware.display.DisplayManager;
+import android.media.AudioManager;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Bundle;
@@ -1904,6 +1905,8 @@ public class MainActivity extends Activity
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (adjustAndroidMediaVolume(keyCode))
+            return true;
         if (handlePointerCaptureBackKey(event))
             return true;
         // Mouse Back is already forwarded as BTN_SIDE from the MotionEvent path.
@@ -1952,6 +1955,11 @@ public class MainActivity extends Activity
     // Called from KeyInterceptor (accessibility service) to handle keys that
     // the normal onKeyDown/onKeyUp might miss (e.g. Fn combos).
     public boolean handleAccessibilityKey(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN
+                && adjustAndroidMediaVolume(event.getKeyCode()))
+            return true;
+        if (event.getAction() == KeyEvent.ACTION_UP && isAndroidVolumeKey(event.getKeyCode()))
+            return true;
         if (handlePointerCaptureBackKey(event))
             return true;
         if (event.getKeyCode() == KeyEvent.KEYCODE_BACK && isMouseKeyEvent(event))
@@ -2013,11 +2021,42 @@ public class MainActivity extends Activity
 
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (isAndroidVolumeKey(keyCode))
+            return true;
         if (handlePointerCaptureBackKey(event))
             return true;
         if (keyCode == KeyEvent.KEYCODE_BACK && isMouseKeyEvent(event))
             return true;
         forwardKeyToLinux(event);
+        return true;
+    }
+
+    private static boolean isAndroidVolumeKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_VOLUME_UP
+                || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
+                || keyCode == KeyEvent.KEYCODE_VOLUME_MUTE;
+    }
+
+    /** Keep hardware volume controls on Android instead of forwarding them to Linux. */
+    private boolean adjustAndroidMediaVolume(int keyCode) {
+        final int direction;
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            direction = AudioManager.ADJUST_RAISE;
+        } else if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            direction = AudioManager.ADJUST_LOWER;
+        } else if (keyCode == KeyEvent.KEYCODE_VOLUME_MUTE) {
+            direction = AudioManager.ADJUST_TOGGLE_MUTE;
+        } else {
+            return false;
+        }
+
+        AudioManager audio = (AudioManager) getSystemService(AUDIO_SERVICE);
+        if (audio != null) {
+            audio.adjustStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    direction,
+                    AudioManager.FLAG_SHOW_UI);
+        }
         return true;
     }
 
