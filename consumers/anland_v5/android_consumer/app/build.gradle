@@ -48,7 +48,30 @@ android {
 
         externalNativeBuild {
             cmake {
-                arguments "-DANDROID_STL=c++_static", "-DANLAND_TRACY=${project.findProperty('anlandTracy') ?: 'ON'}"
+                arguments "-DANDROID_STL=c++_static"
+            }
+        }
+    }
+
+    // Two variants of the same app: plain (no Tracy client, lean) and tracy
+    // (Tracy client + INTERNET permission overlay in src/tracy/ so the client
+    // can listen on TCP 8086). Each flavor drives the ANLAND_TRACY CMake option.
+    flavorDimensions "tracy"
+    productFlavors {
+        plain {
+            dimension "tracy"
+            externalNativeBuild {
+                cmake {
+                    arguments "-DANLAND_TRACY=OFF"
+                }
+            }
+        }
+        tracy {
+            dimension "tracy"
+            externalNativeBuild {
+                cmake {
+                    arguments "-DANLAND_TRACY=ON"
+                }
             }
         }
     }

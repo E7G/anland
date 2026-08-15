@@ -10,15 +10,18 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       # One plain APK and one with the Tracy client enabled for profiling
-      # (-PanlandTracy controls the ANLAND_TRACY CMake option). Tracy build
-      # clones the tag pinned in jni/CMakeLists.txt at configure time.
+      # (product flavors in app/build.gradle; the tracy flavor also adds the
+      # INTERNET permission the Tracy listener needs). Tracy build clones the
+      # tag pinned in jni/CMakeLists.txt at configure time.
       fail-fast: false
       matrix:
         include:
-          - tracy: "OFF"
+          - task: assemblePlainRelease
             name: anland-v5
-          - tracy: "ON"
+            apk: plain/release/app-plain-release.apk
+          - task: assembleTracyRelease
             name: anland-v5-tracy
+            apk: tracy/release/app-tracy-release.apk
     steps:
       - uses: actions/checkout@v7
         with:
@@ -56,20 +59,19 @@ jobs:
           # Pass debug signing as project properties on the command line instead of
           # appending to the tracked gradle.properties, which would dirty the working
           # tree and make the git-derived versionName ("...-dirty") wrong on CI.
-          ./gradlew assembleRelease \
-            -PanlandTracy=${{ matrix.tracy }} \
+          ./gradlew ${{ matrix.task }} \
             -Pandroid.injected.signing.store.file="$HOME/.android/debug.keystore" \
             -Pandroid.injected.signing.store.password=android \
             -Pandroid.injected.signing.key.alias=androiddebugkey \
             -Pandroid.injected.signing.key.password=android
-          cp app/build/outputs/apk/release/app-release.apk \
-             app/build/outputs/apk/release/${{ matrix.name }}.apk
+          cp app/build/outputs/apk/${{ matrix.apk }} \
+             app/build/outputs/apk/${{ matrix.name }}.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
-          path: consumers/anland_v5/android_consumer/app/build/outputs/apk/release/${{ matrix.name }}.apk
+          path: consumers/anland_v5/android_consumer/app/build/outputs/apk/${{ matrix.name }}.apk
 
   build-daemon:
     runs-on: ubuntu-latest

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Merged on top of src/main by the "tracy" flavor only. The Tracy client
+     listens on TCP 8086; without INTERNET an app is denied any AF_INET /
+     AF_INET6 socket, so the listener fails silently. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>
