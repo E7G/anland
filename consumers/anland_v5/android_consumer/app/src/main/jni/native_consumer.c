@@ -23,6 +23,13 @@
 #include "protocol.h"
 #include "socket_utils.h"
 
+/* Tracy C API. No-op unless TRACY_ENABLE is defined (only when built with
+ * -DANLAND_TRACY=ON); guarded on __has_include so the file also compiles when
+ * the tracy client was not fetched. */
+#if __has_include(<tracy/TracyC.h>)
+#include <tracy/TracyC.h>
+#endif
+
 #define TAG "Anland"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -246,7 +253,9 @@ static void *event_thread_func(void *arg)
         }
 
         struct OutputEvent ev;
+        TracyCZoneN(zPoll, "poll_output_event", 1);
         int ret = poll_output_event(s->ctx, &ev, 500);
+        TracyCZoneEnd(zPoll);
         if (ret <= 0)
             continue;
 
@@ -599,7 +608,10 @@ static void *render_thread_func(void *arg)
     while (s->running) {
         if (s->need_reconnect) {
             LOGI("reconnecting...");
-            if (do_connect(s) < 0) {
+            TracyCZoneN(zConnect, "do_connect", 1);
+            int rc = do_connect(s);
+            TracyCZoneEnd(zConnect);
+            if (rc < 0) {
                 usleep(500000);
                 continue;
             }
@@ -607,7 +619,10 @@ static void *render_thread_func(void *arg)
 
         ANativeWindowBuffer *anb = NULL;
         int acqfence = -1;
-        if (api.dequeueBuffer(s->window, &anb, &acqfence) != 0 || !anb) {
+        TracyCZoneN(zDequeue, "dequeueBuffer", 1);
+        int dq = api.dequeueBuffer(s->window, &anb, &acqfence);
+        TracyCZoneEnd(zDequeue);
+        if (dq != 0 || !anb) {
             usleep(16000);
             continue;
         }
@@ -615,9 +630,11 @@ static void *render_thread_func(void *arg)
          * already safe to write (SurfaceFlinger done reading the previous frame)
          * before we hand it to the producer. A sync_file fd signals POLLIN. */
         if (acqfence >= 0) {
+            TracyCZoneN(zAcqFence, "acquire fence wait", 1);
             struct pollfd fpfd = { .fd = acqfence, .events = POLLIN };
             poll(&fpfd, 1, 1000);
             close(acqfence);
+            TracyCZoneEnd(zAcqFence);
         }
 
         int idx = -1;
@@ -634,7 +651,10 @@ static void *render_thread_func(void *arg)
             continue;
         }
 
-        if (select_dmabuf(s->ctx, idx) < 0) {
+        TracyCZoneN(zSelect, "select_dmabuf", 1);
+        int sel = select_dmabuf(s->ctx, idx);
+        TracyCZoneEnd(zSelect);
+        if (sel < 0) {
             api.queueBuffer(s->window, anb, -1);
             usleep(16000);
             continue;
@@ -644,8 +664,11 @@ static void *render_thread_func(void *arg)
          * over data_fd (reverse). Queue with it so SurfaceFlinger waits GPU-side
          * before scanout -- this lets the producer submit before its GPU render
          * completes (no glFinish stall). rfence == -1 falls back to "ready now". */
+        TracyCZoneN(zRefresh, "refresh_done (producer render)", 1);
         int rfence = refresh_done(s->ctx);
+        TracyCZoneEnd(zRefresh);
         api.queueBuffer(s->window, anb, rfence);
+        TracyCFrameMark;
     }
 
     LOGI("render thread stopped");

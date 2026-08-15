@@ -6,8 +6,19 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-apk:
     runs-on: ubuntu-latest
+    strategy:
+      # One plain APK and one with the Tracy client enabled for profiling
+      # (-PanlandTracy controls the ANLAND_TRACY CMake option). Tracy build
+      # clones the tag pinned in jni/CMakeLists.txt at configure time.
+      fail-fast: false
+      matrix:
+        include:
+          - tracy: "OFF"
+            name: anland-v5
+          - tracy: "ON"
+            name: anland-v5-tracy
     steps:
       - uses: actions/checkout@v7
         with:
@@ -46,17 +57,35 @@ jobs:
           # appending to the tracked gradle.properties, which would dirty the working
           # tree and make the git-derived versionName ("...-dirty") wrong on CI.
           ./gradlew assembleRelease \
+            -PanlandTracy=${{ matrix.tracy }} \
             -Pandroid.injected.signing.store.file="$HOME/.android/debug.keystore" \
             -Pandroid.injected.signing.store.password=android \
             -Pandroid.injected.signing.key.alias=androiddebugkey \
             -Pandroid.injected.signing.key.password=android
-          cp app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/anland-v5.apk
+          cp app/build/outputs/apk/release/app-release.apk \
+             app/build/outputs/apk/release/${{ matrix.name }}.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
-          name: anland-v5
-          path: consumers/anland_v5/android_consumer/app/build/outputs/apk/release/anland-v5.apk
+          name: ${{ matrix.name }}
+          path: consumers/anland_v5/android_consumer/app/build/outputs/apk/release/${{ matrix.name }}.apk
+
+  build-daemon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Android SDK and NDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools build-tools;34.0.0 ndk;29.0.13113456"
+          accept-android-sdk-licenses: true
+
+      - name: Set NDK_DIR environment variable
+        run: echo "NDK_DIR=$ANDROID_HOME/ndk/29.0.13113456" >> $GITHUB_ENV
 
       - name: Configure CMake for Android
         run: |

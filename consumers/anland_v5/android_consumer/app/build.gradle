@@ -48,7 +48,7 @@ android {
 
         externalNativeBuild {
             cmake {
-                arguments "-DANDROID_STL=none"
+                arguments "-DANDROID_STL=c++_static", "-DANLAND_TRACY=${project.findProperty('anlandTracy') ?: 'ON'}"
             }
         }
     }
