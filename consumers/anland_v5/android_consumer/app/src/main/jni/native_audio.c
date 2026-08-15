@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "native_audio.h"
 #include "protocol.h"
+#include "tracy_zones.h"
 
 #include <aaudio/AAudio.h>
 #include <android/log.h>
@@ -278,6 +279,7 @@ static aaudio_data_callback_result_t play_data_cb(
     AAudioStream *stream, void *userdata, void *audio_data, int32_t num_frames)
 {
     (void)stream;
+    TracyCZoneN(zCb, "audio play callback", 1);
     struct audio_bridge *b = userdata;
     uint8_t *dst = audio_data;
     int16_t *samples = audio_data;
@@ -304,6 +306,8 @@ static aaudio_data_callback_result_t play_data_cb(
         fill_keepalive_frames(b, (int16_t *)(dst + got), keepalive_frames, channels);
         b->play_idle = true;
     }
+    TracyCPlot("audio underrun frames", (float)(num_frames - got_frames));
+    TracyCZoneEnd(zCb);
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
@@ -568,7 +572,10 @@ static void *play_thread_func(void *arg)
             continue;
         }
 
-        ssize_t n = recv(fd, b->rx, sizeof(b->rx), 0);
+        ssize_t n;
+        TracyCZoneN(zRecv, "audio recv PCM", 1);
+        n = recv(fd, b->rx, sizeof(b->rx), 0);
+        TracyCZoneEnd(zRecv);
         if (n < (ssize_t)sizeof(struct audio_msg))
             continue;
 
@@ -586,7 +593,10 @@ static void *play_thread_func(void *arg)
         if (frames <= 0)
             continue;
 
+        TracyCZoneN(zQueue, "audio queue PCM", 1);
         queue_playback_frames(b, b->rx + sizeof(struct audio_msg), frames, play_channels);
+        TracyCZoneEnd(zQueue);
+        TracyCPlot("audio packet frames", (float)frames);
         last_pcm_ms = now_ms();
     }
 
@@ -637,7 +647,9 @@ static void *cap_thread_func(void *arg)
             started = true;
         }
 
+        TracyCZoneN(zMicRead, "mic read", 1);
         int32_t got = AAudioStream_read(b->rec, buf, mic_frames, 100 * 1000 * 1000L);
+        TracyCZoneEnd(zMicRead);
         if (got <= 0)
             continue;
 
@@ -648,7 +660,10 @@ static void *cap_thread_func(void *arg)
             { .iov_base = buf, .iov_len = bytes },
         };
         struct msghdr m = { .msg_iov = iov, .msg_iovlen = 2 };
+        TracyCZoneN(zMicSend, "mic send", 1);
         sendmsg(fd, &m, MSG_DONTWAIT | MSG_NOSIGNAL);   /* drop if the socket is full */
+        TracyCZoneEnd(zMicSend);
+        TracyCFrameMark;
     }
 
     if (started && b->rec)

@@ -22,13 +22,7 @@
 #include "native_audio.h"
 #include "protocol.h"
 #include "socket_utils.h"
-
-/* Tracy C API. No-op unless TRACY_ENABLE is defined (only when built with
- * -DANLAND_TRACY=ON); guarded on __has_include so the file also compiles when
- * the tracy client was not fetched. */
-#if __has_include(<tracy/TracyC.h>)
-#include <tracy/TracyC.h>
-#endif
+#include "tracy_zones.h"
 
 #define TAG "Anland"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)

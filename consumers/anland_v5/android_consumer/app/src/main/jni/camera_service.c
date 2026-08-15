@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "protocol.h"
+#include "tracy_zones.h"
 
 #define TAG "AnlandCam"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -103,6 +104,11 @@ static struct camera_hw {
 } g_cam;
 
 static void cam_stop_recording(int cam);
+
+/* Per-camera frame-mark names for Tracy (one frame sequence per reader thread). */
+static const char *const cam_framemark[MAX_CAMERAS] = {
+    "cam0", "cam1", "cam2", "cam3", "cam4", "cam5", "cam6", "cam7",
+};
 
 /* ---------------------------------------------------------------
  * Client registry. clients_lock guards the array and every client's
@@ -264,7 +270,10 @@ static void on_frame_available(void *context, AImageReader *reader)
         return;
 
     AImage *image = NULL;
-    if (AImageReader_acquireLatestImage(reader, &image) != AMEDIA_OK || image == NULL)
+    TracyCZoneN(zAcquire, "cam acquireLatestImage", 1);
+    media_status_t acq = AImageReader_acquireLatestImage(reader, &image);
+    TracyCZoneEnd(zAcquire);
+    if (acq != AMEDIA_OK || image == NULL)
         return;
 
     int32_t numPlanes = 0;
@@ -295,6 +304,7 @@ static void on_frame_available(void *context, AImageReader *reader)
 
         /* Wait for every reader of the previous frame in this slot to finish. Bounded
          * (1s) so a stuck/dead producer can't stall capture indefinitely. */
+        TracyCZoneN(zSlotWait, "cam wait slot free", 1);
         pthread_mutex_lock(&g_cam.slot_lock[cam]);
         while (g_cam.slot_pending[cam][slot] > 0) {
             struct timespec ts;
@@ -309,16 +319,20 @@ static void on_frame_available(void *context, AImageReader *reader)
             }
         }
         pthread_mutex_unlock(&g_cam.slot_lock[cam]);
+        TracyCZoneEnd(zSlotWait);
 
         /* Pack the frame ONCE into the shared slot, then fan out READY to all
          * recorders. slot_pending is set under the lock before we drop it so a fast
          * producer's DONE can't race ahead of the count. */
+        TracyCZoneN(zPack, "cam pack NV21", 1);
         int fmt = cam_pack_frame(cam, slot, yData, yRow, uData, uRow, uPix,
                                  vData, vRow, vPix, w, h);
+        TracyCZoneEnd(zPack);
 
         int n = 0, sent = 0;
         struct camera_client **snap = snapshot_clients(&n);
         pthread_mutex_lock(&g_cam.slot_lock[cam]);
+        TracyCZoneN(zFanout, "cam fan-out READY", 1);
         for (int i = 0; i < n; i++) {
             struct camera_client *c = snap[i];
             if (!c->recording[cam])
@@ -326,11 +340,14 @@ static void on_frame_available(void *context, AImageReader *reader)
             cam_frame_ready(c, cam, slot, w, h, fmt);
             sent++;
         }
+        TracyCZoneEnd(zFanout);
         g_cam.slot_pending[cam][slot] = sent;
         g_cam.last_sent[cam] = sent;
         g_cam.cur_slot[cam] = slot ^ 1;
         pthread_mutex_unlock(&g_cam.slot_lock[cam]);
         release_snapshot(snap, n);
+        TracyCPlot(cam_framemark[cam], (float)sent);
+        TracyCFrameMarkNamed(cam_framemark[cam]);
     }
 
     AImage_delete(image);
@@ -632,6 +649,7 @@ static void *io_thread_func(void *arg)
 
         int r = poll(pfds, nfds, 500);
         if (r > 0) {
+            TracyCZoneN(zDispatch, "cam io dispatch", 1);
             for (int i = 0; i < n; i++) {
                 struct camera_client *c = snap[i];
                 int base = i * (1 + ncam);
@@ -653,6 +671,7 @@ static void *io_thread_func(void *arg)
                         stream_handle_msg(c, cam, &m);
                 }
             }
+            TracyCZoneEnd(zDispatch);
         }
         free(pfds);
         release_snapshot(snap, n);
