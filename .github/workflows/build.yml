@@ -119,7 +119,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release_assets
-          cp consumers/anland_v5/android_consumer/app/build/outputs/apk/release/anland-v5.apk \
+          cp consumers/anland_v5/android_consumer/app/build/outputs/apk/plain/release/app-plain-release.apk \
              release_assets/anland-mi-pad4-optimized.apk
           (cd magisk_module && zip -9 -r ../release_assets/anland-daemon-mi-pad4.zip .)
           (cd release_assets && sha256sum * > SHA256SUMS)
