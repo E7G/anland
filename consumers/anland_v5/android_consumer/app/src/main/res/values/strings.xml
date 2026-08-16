@@ -155,6 +155,10 @@
     <string name="key_home">Home</string>
     <string name="key_back">Back</string>
 
+    <!-- Keyboard floating switch -->
+    <string name="keyboard_floating_switch">Floating keyboard</string>
+    <string name="keyboard_floating_hint">Drag keyboard to any screen position</string>
+
     <!-- Audio latency presets -->
     <string-array name="latency_labels">
         <item>Auto (engine default)</item>
