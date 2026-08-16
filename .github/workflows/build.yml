@@ -78,10 +78,16 @@ jobs:
 
   build-daemon:
     runs-on: ubuntu-latest
+    needs: build-apk
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Download APK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_assets
 
       - name: Setup Android SDK and NDK
         uses: android-actions/setup-android@v4
@@ -119,7 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release_assets
-          cp consumers/anland_v5/android_consumer/app/build/outputs/apk/plain/release/app-plain-release.apk \
+          cp release_assets/anland-v5/anland-v5.apk \
              release_assets/anland-mi-pad4-optimized.apk
           (cd magisk_module && zip -9 -r ../release_assets/anland-daemon-mi-pad4.zip .)
           (cd release_assets && sha256sum * > SHA256SUMS)
