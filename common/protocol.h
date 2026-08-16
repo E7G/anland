@@ -91,7 +91,16 @@ struct buf_info {
 /* Show/hide Android's system IME when a producer text field gains/loses focus. */
 #define CONSUMER_VAR_ANDROID_IME 2
 
+/* V3.1 audio extension: 5 deposited fds */
+#define DISPLAY_DEPOSITED_FD_COUNT 5
 
+enum display_deposited_fd {
+    DISPLAY_FD_BUF_READY = 0,
+    DISPLAY_FD_FENCE     = 1,
+    DISPLAY_FD_DATA      = 2,
+    DISPLAY_FD_SHM       = 3,
+    DISPLAY_FD_AUDIO     = 4,
+};
 
 struct InputEvent {
     uint32_t type;

@@ -79,9 +79,9 @@ struct data_msg { uint32_t type; uint32_t size; uint8_t payload[]; } __attribute
 
 ---
 
-## 4. The four deposited descriptors
+## 4. The five deposited descriptors
 
-When the consumer says hello it attaches **four** fds (via `SCM_RIGHTS`), in this exact
+When the consumer says hello it attaches **five** fds (via `SCM_RIGHTS`), in this exact
 order — see `send_hello_fds()` in `display_consumer.c`:
 
 | Index | Direction | Purpose |
@@ -90,8 +90,9 @@ order — see `send_hello_fds()` in `display_consumer.c`:
 | `fds[1]` | P → C | `fence_fd` socketpair write end: render‑done message + optional fence fd via `SCM_RIGHTS` |
 | `fds[2]` | C ↔ P | data‑channel end: the producer's end of the socketpair |
 | `fds[3]` | C → P | `shm_fd`: the 4‑byte selected‑index page |
+| `fds[4]` | C ↔ P | `audio_fd`: full‑duplex PCM socket (SOCK_SEQPACKET) for audio data |
 
-> **V3 unchanged**: fd slots are identical to V2
+> **V3.1 audio extension**: fd slots extended from 4 to 5 to support bidirectional audio
 
 The consumer keeps `sv[0]` as its own `data_fd` and deposits `sv[1]`. The daemon stores
 these as **deposited fds** and hands them to the producer on request. **The daemon is

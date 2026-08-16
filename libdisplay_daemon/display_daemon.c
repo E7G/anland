@@ -15,7 +15,7 @@
 #define MAX_EVENTS 16
 /* Hello fd set: { buf_ready, fence, data, shm, audio }. The daemon only relays
  * the fds; it never interprets the slots. */
-#define MAX_FDS    5
+#define MAX_FDS    DISPLAY_DEPOSITED_FD_COUNT
 
 struct client {
     int  ctrl_fd;
@@ -78,6 +78,17 @@ static void try_deliver_fds(daemon_ctx *ctx)
     if (!ctx->producer || ctx->deposited_fd_count < MAX_FDS) {
         ctx->producer_waiting_fds = true;
         return;
+    }
+
+    fprintf(stderr, "anland-daemon: delivering %d fds to producer\n", ctx->deposited_fd_count);
+    for (int i = 0; i < ctx->deposited_fd_count; i++) {
+        int type = 0;
+        socklen_t len = sizeof(type);
+        if (getsockopt(ctx->deposited_fds[i], SOL_SOCKET, SO_TYPE, &type, &len) == 0) {
+            fprintf(stderr, "anland-daemon: deposited_fd[%d]=%d type=%d\n", i, ctx->deposited_fds[i], type);
+        } else {
+            fprintf(stderr, "anland-daemon: deposited_fd[%d]=%d non-socket\n", i, ctx->deposited_fds[i]);
+        }
     }
 
     struct ctrl_msg msg = { .type = CTRL_MSG_FDS_READY, .size = 0 };
@@ -150,13 +161,30 @@ static void handle_client_data(daemon_ctx *ctx, struct client *c)
 
     switch (hdr.type) {
     case CTRL_MSG_CONSUMER_HELLO:
-        if (c == ctx->consumer && fd_count >= MAX_FDS - 1) {
+        if (c == ctx->consumer && fd_count == MAX_FDS) {
             clear_deposited_fds(ctx);
             memcpy(ctx->deposited_fds, fds, sizeof(int) * fd_count);
             ctx->deposited_fd_count = fd_count;
-            fprintf(stderr, "daemon: consumer re-deposited %d fds\n", fd_count);
+            fprintf(stderr, "anland-daemon: consumer deposited %d fds\n", fd_count);
+            
+            /* Log socket types for debugging */
+            for (int i = 0; i < fd_count; i++) {
+                int type = 0;
+                socklen_t len = sizeof(type);
+                if (getsockopt(fds[i], SOL_SOCKET, SO_TYPE, &type, &len) == 0) {
+                    fprintf(stderr, "anland-daemon: fd[%d]=%d type=%d\n", i, fds[i], type);
+                } else {
+                    fprintf(stderr, "anland-daemon: fd[%d]=%d non-socket\n", i, fds[i]);
+                }
+            }
+            
             if (ctx->producer_waiting_fds)
                 try_deliver_fds(ctx);
+        } else if (c == ctx->consumer) {
+            fprintf(stderr, "anland-daemon: consumer hello with wrong fd_count=%d (expected %d)\n",
+                    fd_count, MAX_FDS);
+            for (int i = 0; i < fd_count; i++)
+                close(fds[i]);
         }
         break;
 

@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "display_producer.h"
 #include "../common/socket_utils.h"
+#include "../common/protocol.h"
 
 #include <errno.h>
 #include <poll.h>
@@ -89,11 +90,11 @@ static int pickup_fds(display_ctx *ctx)
     if (poll(&pfd, 1, HANDSHAKE_TIMEOUT_MS) <= 0)
         return -1;
 
-    int fds[5];
+    int fds[DISPLAY_DEPOSITED_FD_COUNT];
     int fd_count = 0;
     struct ctrl_msg resp;
-    int n = recv_fds(ctx->ctrl_fd, &resp, sizeof(resp), fds, 5, &fd_count);
-    if (n <= 0 || resp.type != CTRL_MSG_FDS_READY || fd_count < 5) {
+    int n = recv_fds(ctx->ctrl_fd, &resp, sizeof(resp), fds, DISPLAY_DEPOSITED_FD_COUNT, &fd_count);
+    if (n <= 0 || resp.type != CTRL_MSG_FDS_READY || fd_count < DISPLAY_DEPOSITED_FD_COUNT) {
         for (int i = 0; i < fd_count; i++)
             close(fds[i]);
         return -1;
@@ -102,11 +103,11 @@ static int pickup_fds(display_ctx *ctx)
     /* Slot order matches the consumer's send_hello_fds(): { buf_ready, fence, data, shm, audio }.
      * fence_fd is the write end of the dedicated producer->consumer render-done channel;
      * audio_fd is the full-duplex PCM socket (producer writes playback, reads mic). */
-    ctx->buf_ready_efd    = fds[0];
-    ctx->fence_fd         = fds[1];
-    ctx->data_fd          = fds[2];
-    ctx->shm_fd           = fds[3];
-    ctx->audio_fd         = fds[4];
+    ctx->buf_ready_efd    = fds[DISPLAY_FD_BUF_READY];
+    ctx->fence_fd         = fds[DISPLAY_FD_FENCE];
+    ctx->data_fd          = fds[DISPLAY_FD_DATA];
+    ctx->shm_fd           = fds[DISPLAY_FD_SHM];
+    ctx->audio_fd         = fds[DISPLAY_FD_AUDIO];
 
     ctx->shm_ptr = mmap(NULL, sizeof(uint32_t), PROT_READ, MAP_SHARED, ctx->shm_fd, 0);
     if (ctx->shm_ptr == MAP_FAILED) {

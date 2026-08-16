@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "display_consumer.h"
 #include "../common/socket_utils.h"
+#include "../common/protocol.h"
 
 #include <errno.h>
 #include <poll.h>
@@ -188,8 +189,14 @@ static int send_hello_fds(display_ctx *ctx)
     ctx->audio_fd = av[0];
 
     struct ctrl_msg hdr = { .type = CTRL_MSG_CONSUMER_HELLO, .size = 0 };
-    int fds[5] = { ctx->buf_ready_efd, fv[1], sv[1], ctx->shm_fd, av[1] };
-    int ret = send_fds(ctx->ctrl_fd, &hdr, sizeof(hdr), fds, 5);
+    int fds[DISPLAY_DEPOSITED_FD_COUNT] = { 
+        ctx->buf_ready_efd, 
+        fv[1], 
+        sv[1], 
+        ctx->shm_fd, 
+        av[1] 
+    };
+    int ret = send_fds(ctx->ctrl_fd, &hdr, sizeof(hdr), fds, DISPLAY_DEPOSITED_FD_COUNT);
     close(sv[1]);
     close(fv[1]);
     close(av[1]);
