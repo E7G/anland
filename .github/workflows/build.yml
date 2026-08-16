@@ -128,7 +128,7 @@ jobs:
           cp release_assets/anland-v5/anland-v5.apk \
              release_assets/anland-mi-pad4-optimized.apk
           (cd magisk_module && zip -9 -r ../release_assets/anland-daemon-mi-pad4.zip .)
-          (cd release_assets && sha256sum * > SHA256SUMS)
+          (cd release_assets && sha256sum anland-mi-pad4-optimized.apk anland-daemon-mi-pad4.zip > SHA256SUMS)
 
       - name: Publish GitHub Release
         if: github.ref == 'refs/heads/main'
