@@ -20,30 +20,81 @@ jobs:
           ref: release/test-20260823
           fetch-depth: 0
 
-      - name: Dispatch Anland release
+      - name: Dispatch or locate Anland release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref main
+          set -u
+
+          record_result() {
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .release-ok .release-failed 2>/dev/null || true
+            if ! git diff --cached --quiet; then
+              git commit -m "ci: record Anland test release result"
+              git push origin HEAD:release/test-20260823
+            fi
+          }
+          trap record_result EXIT
+
+          rm -f .release-ok .release-failed
+          main_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" \
+            --jq ".[] | select(.target_commitish == \"$main_sha\") | .html_url" | head -n1)
+          if [ -n "$existing" ]; then
+            printf '%s\n' "$existing" > .release-ok
+            exit 0
+          fi
+
+          before=$(gh run list --repo "$GITHUB_REPOSITORY" \
+            --workflow build.yml --branch main --event workflow_dispatch --limit 1 \
+            --json databaseId --jq '.[0].databaseId // 0')
+
+          if ! gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref main; then
+            echo "Failed to dispatch build.yml" > .release-failed
+            exit 1
+          fi
 
           run_id=""
           for i in $(seq 1 60); do
-            run_id=$(gh run list --repo "$GITHUB_REPOSITORY" \
+            latest=$(gh run list --repo "$GITHUB_REPOSITORY" \
               --workflow build.yml --branch main --event workflow_dispatch --limit 1 \
-              --json databaseId --jq '.[0].databaseId // empty')
-            if [ -n "$run_id" ]; then break; fi
+              --json databaseId --jq '.[0].databaseId // 0')
+            if [ "$latest" != "0" ] && [ "$latest" != "$before" ]; then
+              run_id="$latest"
+              break
+            fi
             sleep 5
           done
-          test -n "$run_id"
-          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
 
-          release_url=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json url --jq '.[0].url')
-          test -n "$release_url"
+          if [ -z "$run_id" ]; then
+            echo "Could not find newly dispatched build.yml run" > .release-failed
+            exit 1
+          fi
+
+          if ! gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status; then
+            {
+              echo "Anland release build failed. Run ID: $run_id"
+              gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json url,status,conclusion 2>/dev/null || true
+              echo
+              echo "Failed logs:"
+              gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --log-failed 2>/dev/null || true
+            } > .release-failed
+            exit 1
+          fi
+
+          release_url=""
+          for i in $(seq 1 30); do
+            release_url=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" \
+              --jq ".[] | select(.target_commitish == \"$main_sha\") | .html_url" | head -n1)
+            if [ -n "$release_url" ]; then break; fi
+            sleep 5
+          done
+
+          if [ -z "$release_url" ]; then
+            echo "Build succeeded but no release targeting $main_sha was found (run $run_id)" > .release-failed
+            exit 1
+          fi
+
           printf '%s\n' "$release_url" > .release-ok
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .release-ok
-          git commit -m "ci: record Anland test release"
-          git push origin HEAD:release/test-20260823
