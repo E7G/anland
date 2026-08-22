@@ -105,10 +105,19 @@ build_pkg_rpm() {
         sed -i '/^%autosetup/a mkdir -p %{_builddir}/%{name}-%{version}/src/backends/anland \&\& tar xf %{_sourcedir}/anland-overlay.tar -C %{_builddir}/%{name}-%{version}/src/backends/anland/' "$spec"
     fi
 
-    local first_source_line
+    local first_source_line patch_num
     first_source_line=$(grep -n "^Source0:" "$spec" | head -1 | cut -d: -f1)
     if [ -n "$first_source_line" ]; then
-        sed -i "${first_source_line}a Patch0: $patchbase" "$spec"
+        # Fedora specs can already define Patch0 (Fedora 44 does), so append
+        # our patch at the next available numeric slot instead of colliding.
+        patch_num="$(sed -nE 's/^[[:space:]]*Patch[[:space:]]*([0-9]+)[[:space:]]*:.*/\1/p' "$spec" | sort -n | tail -n1)"
+        if [ -n "$patch_num" ]; then
+            patch_num=$((patch_num + 1))
+        else
+            patch_num=0
+        fi
+        log "Adding $patchbase as Patch$patch_num"
+        sed -i "${first_source_line}a Patch${patch_num}: $patchbase" "$spec"
     fi
 
     local rel_line
