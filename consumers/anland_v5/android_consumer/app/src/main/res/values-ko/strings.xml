@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_short_label">설정</string>
+
+    <!-- Titles / section headers -->
+    <string name="settings_title">설정</string>
+    <string name="section_virtual_keyboard">소프트 키보드 전환 키</string>
+    <string name="section_extra_keys">추가 키 바</string>
+    <string name="section_custom_layout">커스텀 추가 키 레이아웃</string>
+    <string name="section_touchpad">터치패드 설정</string>
+    <string name="section_connection">연결</string>
+    <string name="section_resolution">디스플레이 해상도</string>
+    <string name="section_notification">설정 알림</string>
+
+    <!-- Settings home: category rows and back navigation -->
+    <string name="nav_back">‹ 뒤로</string>
+    <string name="cat_keyboard_title">키보드 및 키</string>
+    <string name="cat_keyboard_subtitle">키 바인딩, 몰입 모드, 접근성 및 추가 키 바</string>
+    <string name="cat_touchpad_title">터치패드 및 마우스</string>
+    <string name="cat_touchpad_subtitle">터치패드 모드, 포인터 캡처 및 감도</string>
+    <string name="cat_connection_subtitle">소켓, 루트, 마이크, 카메라 및 오디오 지연시간</string>
+    <string name="cat_resolution_subtitle">출력 해상도 및 프리셋</string>
+    <string name="cat_general_title">일반</string>
+    <string name="cat_general_subtitle">화면 방향 및 설정 알림</string>
+
+    <!-- Screen orientation -->
+    <string name="section_orientation">화면 방향</string>
+    <string name="orientation_label">화면 방향 강제 설정</string>
+    <string-array name="orientation_options">
+        <item>기본값 (시스템)</item>
+        <item>가로 모드 강제</item>
+        <item>세로 모드 강제</item>
+    </string-array>
+
+    <!-- Bind key -->
+    <string name="bind_key_button">소프트 키보드 전환 키 바인딩</string>
+    <string name="raise_desktop_for_soft_keyboard">소프트 키보드가 열리면 데스크톱 올리기</string>
+    <string name="raise_desktop_for_soft_keyboard_hint">이 옵션을 켜면 데스크톱 화면이 줄어들고 위로 이동하여 입력 중인 내용을 볼 수 있습니다.</string>
+    <string name="listening_countdown">키 입력 대기 중… (%1$d초)</string>
+    <string name="status_current_none">현재: 없음</string>
+    <string name="status_current">현재: %1$s</string>
+    <string name="status_current_no_scancode">현재: %1$s — 이 키는 스캔 코드를 보고하지 않아 몰입 모드에서 사용할 수 없습니다. 볼륨 업과 같은 하드웨어 키를 바인딩하세요.</string>
