@@ -44,8 +44,40 @@
 #include <unistd.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+/* The NDK sysroot ships only a subset of the kernel UAPI headers and lacks
+ * socket_diag.h (and, on some releases, unix_diag.h). Both are trivial stable
+ * UAPI definitions, so fall back to inline copies when they are missing. */
+#if __has_include(<linux/socket_diag.h>)
 #include <linux/socket_diag.h>
+#else
+#define SOCK_DIAG_BY_FAMILY 20
+#endif
+#if __has_include(<linux/unix_diag.h>)
 #include <linux/unix_diag.h>
+#else
+struct unix_diag_req {
+    __u8    sdiag_family;
+    __u8    pad;
+    __u16   udiag_states;
+    __u32   udiag_ino;
+    __u32   udiag_show;
+    __u32   udiag_cookie[2];
+};
+struct unix_diag_msg {
+    __u8    udiag_family;
+    __u8    udiag_type;
+    __u8    udiag_state;
+    __u8    udiag_pad;
+    __u32   udiag_cookie[2];
+    __u32   udiag_ino;
+    __u32   udiag_peer;
+    __u32   udiag_rqueue;
+    __u32   udiag_wqueue;
+    __u32   udiag_cookie2[0];
+};
+#define UNIX_DIAG_PEER    3
+#define UDIAG_SHOW_PEER   0x00000010
+#endif
 
 #define TAG "AnlandSetTopApp"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
