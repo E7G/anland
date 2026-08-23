@@ -966,6 +966,27 @@ public class SettingsActivity extends Activity {
         rootHint.setPadding(0, dp(4), 0, 0);
         root.addView(rootHint);
 
+        // Foreground scheduling (root): while the Linux desktop renders, move
+        // its whole process tree into Android's top-app cgroups (cpu/cpuset)
+        // via the bundled root helper; moved back to "/" on fallback or
+        // disconnect. Takes effect on next connect.
+        Switch topappSwitch = new Switch(this);
+        topappSwitch.setText(R.string.topapp_switch);
+        topappSwitch.setTextSize(14);
+        topappSwitch.setPadding(0, dp(16), 0, 0);
+        topappSwitch.setChecked(prefs.getBoolean(MainActivity.KEY_TOPAPP, false));
+        topappSwitch.setOnCheckedChangeListener((v, checked) ->
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putBoolean(MainActivity.KEY_TOPAPP, checked).apply());
+        root.addView(topappSwitch);
+
+        TextView topappHint = new TextView(this);
+        topappHint.setText(R.string.topapp_hint);
+        topappHint.setTextSize(12);
+        topappHint.setTextColor(Color.GRAY);
+        topappHint.setPadding(0, dp(4), 0, 0);
+        root.addView(topappHint);
+
         // Forward microphone: capture the device mic and expose it to the Linux
         // desktop as a recording source. Requires the RECORD_AUDIO permission, which
         // MainActivity requests when this is on.

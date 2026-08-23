@@ -93,6 +93,8 @@
     <string name="second_window_open">開啟第二個視窗</string>
     <string name="root_switch">使用 root 連線（輔助程式）</string>
     <string name="root_hint">啟動一個 root 輔助程式（su）連線到 socket，並將連線傳回應用程式。下次連線時生效（請重新開啟應用程式）。</string>
+    <string name="topapp_switch">啟用前台調度（root）</string>
+    <string name="topapp_hint">Linux 桌面渲染期間，root 輔助程式將其整個程序樹移入 top-app cgroup 以前台優先級調度；斷開連線時移回。下次連線時生效。</string>
     <string name="mic_switch">將麥克風轉發到桌面</string>
     <string name="mic_hint">桌面音訊始終透過本裝置的喇叭播放。啟用此項還會把麥克風反向發送到桌面。下次連線時生效（請重新開啟應用程式）。</string>
     <string name="camera_switch">將相機轉發到桌面</string>

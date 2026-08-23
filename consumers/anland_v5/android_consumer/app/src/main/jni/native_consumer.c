@@ -3,6 +3,7 @@
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <jni.h>
 #include <pthread.h>
@@ -84,6 +85,19 @@ struct consumer_state {
     char cfg_bridge_path[512];
     int  cfg_custom_width;
     int  cfg_custom_height;
+    bool cfg_topapp_enable;
+    char cfg_topapp_path[512];
+    /* topapp_path snapshot taken under cfg_lock at the start of each
+     * do_connect(); topapp_promote/demote run on other threads later and only
+     * touch this copy, so they never contend on cfg_lock. */
+    char topapp_run_path[512];
+
+    /* Foreground-scheduling state: the producer process-tree root promoted to
+     * top-app at exit-fallback, or 0 when nothing is promoted. Written by
+     * topapp_promote() / read by topapp_demote() from arbitrary threads
+     * (render/event), all under topapp_lock. */
+    pthread_mutex_t topapp_lock;
+    pid_t topapp_pid;
 
     /* Pointer-motion delta tracking (per-instance). */
     bool  motion_has_last;
@@ -412,6 +426,110 @@ static int recv_fd_via_root_helper(const char *daemon_sock,
     return fd;
 }
 
+/*
+ * Foreground scheduling ("启用前台调度 (root)"): while the producer renders the
+ * desktop its whole process tree sits in Android's top-app cgroups (cpu +
+ * cpuset) for foreground CPU priority; on fallback/disconnect it is moved back
+ * to the root groups. The work happens in the bundled root util libsettopapp.so
+ * (`su -c settopapp ...`), which also resolves the producer pid for us: the
+ * consumer's data/fence/audio sockets are socketpairs it created itself and
+ * forwarded by SCM_RIGHTS, so SO_PEERCRED on them only ever reports the
+ * consumer. The helper instead asks UNIX_DIAG for the data socket's peer
+ * inode, finds its holder, and prints the producer tree-root pid on stdout.
+ */
+
+/* Run `su -c "<cmd>"`, capture its first stdout line. Returns the parsed pid
+ * (>0), or -1 on any failure (no su, helper missing, no output). Blocks for
+ * the duration of the helper; called from the render/event threads where a
+ * short stall at a session boundary is acceptable. */
+static pid_t run_su_capture_pid(const char *cmd)
+{
+    int link[2];
+    if (pipe(link) < 0) {
+        LOGE("settopapp: pipe failed: %s", strerror(errno));
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        LOGE("settopapp: fork failed: %s", strerror(errno));
+        close(link[0]);
+        close(link[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        /* su prompt/progress output must not pollute the pid line. */
+        close(link[0]);
+        dup2(link[1], STDOUT_FILENO);
+        close(link[1]);
+        int devnull = open("/dev/null", O_WRONLY | O_CLOEXEC);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        execlp("su", "su", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+    close(link[1]);
+
+    char line[32];
+    ssize_t n = read(link[0], line, sizeof(line) - 1);
+    close(link[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (n <= 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        LOGE("settopapp: helper failed (status=%d, read=%zd)", status, n);
+        return -1;
+    }
+    line[n] = '\0';
+    int got = atoi(line);
+    return got > 0 ? (pid_t)got : -1;
+}
+
+/* Promote the producer (holding the other end of `data_fd`) to top-app.
+ * Returns the promoted tree-root pid or -1. Called at exit-fallback, i.e. the
+ * producer is connected right now, so the diag lookup has a live peer. */
+static pid_t topapp_promote(struct consumer_state *s, int data_fd)
+{
+    char cmd[sizeof(s->topapp_run_path) + 32];
+
+    /* The inode identifies our end of the data socketpair; the helper resolves
+     * it to the peer the producer holds. data_fd is live for this whole call
+     * (enter_fallback closes it only after this returns -- we run inside the
+     * exit_fallback callback, before any fallback can begin). */
+    struct stat st;
+    if (data_fd < 0 || fstat(data_fd, &st) < 0 || st.st_ino == 0) {
+        LOGE("settopapp: data fd not resolvable");
+        return -1;
+    }
+    snprintf(cmd, sizeof(cmd), "%s %llu", s->topapp_run_path,
+             (unsigned long long)st.st_ino);
+
+    pid_t root = run_su_capture_pid(cmd);
+    if (root > 0)
+        LOGI("settopapp: producer tree root %d promoted to top-app", (int)root);
+    return root;
+}
+
+/* Demote a previously promoted tree back to the root cgroups. Safe to call
+ * with the producer already gone: restore walks the cached root pid's tree as
+ * it exists NOW (leftover processes still move back; dead ones skip). */
+static void topapp_demote(struct consumer_state *s)
+{
+    pthread_mutex_lock(&s->topapp_lock);
+    pid_t root = s->topapp_pid;
+    s->topapp_pid = 0;
+    pthread_mutex_unlock(&s->topapp_lock);
+
+    if (root <= 0)
+        return;
+
+    char cmd[sizeof(s->topapp_run_path) + 32];
+    snprintf(cmd, sizeof(cmd), "%s %d restore", s->topapp_run_path, (int)root);
+    if (run_su_capture_pid(cmd) > 0)
+        LOGI("settopapp: tree root %d restored", (int)root);
+}
+
 static int do_connect(struct consumer_state *s)
 {
     /* Snapshot the connection config for this attempt. */
@@ -423,9 +541,15 @@ static int do_connect(struct consumer_state *s)
     memcpy(sock_path, s->cfg_socket_path, sizeof(sock_path));
     memcpy(helper_path, s->cfg_helper_path, sizeof(helper_path));
     memcpy(bridge_path, s->cfg_bridge_path, sizeof(bridge_path));
+    memcpy(s->topapp_run_path, s->cfg_topapp_path, sizeof(s->topapp_run_path));
+    bool topapp_enable = s->cfg_topapp_enable;
     pthread_mutex_unlock(&s->cfg_lock);
 
     const char *sock = sock_path;
+
+    /* A promoted producer from the previous session must not keep its top-app
+     * boost across a reconnect cycle; drop it before the old ctx dies. */
+    topapp_demote(s);
 
     if (s->ctx) {
         audio_set_ctx(s->audio, NULL);   /* detach audio before the old ctx (and its fd) dies */
@@ -523,6 +647,10 @@ static void on_fallback(void *userdata)
     struct consumer_state *s = userdata;
     LOGI("fallback triggered");
 
+    /* The producer is gone (or the link broke): its top-app boost must end
+     * now, before the tree can leak foreground priority for a whole session. */
+    topapp_demote(s);
+
     audio_set_ctx(s->audio, NULL);   /* the lib has closed the audio fd; stop touching it */
 
     /* Let the owning MainActivity probe the daemon socket and close the window if the
@@ -569,6 +697,19 @@ static void on_exit_fallback(void *userdata)
 {
     struct consumer_state *s = userdata;
     LOGI("exit fallback triggered");
+
+    /* Producer (re)connected: promote its process tree to top-app. Runs before
+     * anything JNI below so a failure here never breaks the session restart.
+     * cfg_topapp_enable is read locklessly like every other cfg read on this
+     * path (Java only reconfigures between connections). */
+    if (s->cfg_topapp_enable && s->topapp_run_path[0] != '\0') {
+        pid_t root = topapp_promote(s, get_data_fd(s->ctx));
+        if (root > 0) {
+            pthread_mutex_lock(&s->topapp_lock);
+            s->topapp_pid = root;
+            pthread_mutex_unlock(&s->topapp_lock);
+        }
+    }
 
     send_refresh_rate(s);
 
@@ -700,6 +841,7 @@ Java_com_anland_consumer_Native_nativeCreate(JNIEnv *env, jclass clazz)
         return 0;
     pthread_mutex_init(&s->lock, NULL);
     pthread_mutex_init(&s->cfg_lock, NULL);
+    pthread_mutex_init(&s->topapp_lock, NULL);
     strncpy(s->cfg_socket_path, "/data/local/tmp/display_daemon.sock",
             sizeof(s->cfg_socket_path) - 1);
     s->audio = audio_create();
@@ -728,6 +870,9 @@ Java_com_anland_consumer_Native_nativeDestroy(JNIEnv *env, jclass clazz, jlong h
         disconnect(s->ctx);
         s->ctx = NULL;
     }
+    /* Window (and its consumer) is going away: the producer loses its display
+     * and will fall back; its boost must not outlive this instance. */
+    topapp_demote(s);
     cleanup_dmabufs(s);
     if (s->window) {
         ANativeWindow_release(s->window);
@@ -753,6 +898,7 @@ Java_com_anland_consumer_Native_nativeDestroy(JNIEnv *env, jclass clazz, jlong h
             (*g_jvm)->DetachCurrentThread(g_jvm);
     }
     s->activity_obj = NULL;
+    pthread_mutex_destroy(&s->topapp_lock);
     pthread_mutex_destroy(&s->cfg_lock);
     pthread_mutex_destroy(&s->lock);
     LOGI("instance %p destroyed", (void *)s);
@@ -774,7 +920,7 @@ Java_com_anland_consumer_Native_nativeSetFocused(
 JNIEXPORT void JNICALL
 Java_com_anland_consumer_Native_nativeConfigure(
     JNIEnv *env, jclass clazz, jlong handle, jstring socketPath, jboolean useRoot,
-    jstring helperPath, jstring bridgePath)
+    jstring helperPath, jstring bridgePath, jboolean topappEnable, jstring topappPath)
 {
     struct consumer_state *s = STATE(handle);
     if (!s)
@@ -787,10 +933,12 @@ Java_com_anland_consumer_Native_nativeConfigure(
     s->cfg_use_root = (useRoot == JNI_TRUE);
     copy_jstring(env, helperPath, s->cfg_helper_path, sizeof(s->cfg_helper_path));
     copy_jstring(env, bridgePath, s->cfg_bridge_path, sizeof(s->cfg_bridge_path));
+    s->cfg_topapp_enable = (topappEnable == JNI_TRUE);
+    copy_jstring(env, topappPath, s->cfg_topapp_path, sizeof(s->cfg_topapp_path));
     pthread_mutex_unlock(&s->cfg_lock);
-
-    LOGI("configured: socket=%s root=%d helper=%s bridge=%s",
-         s->cfg_socket_path, s->cfg_use_root, s->cfg_helper_path, s->cfg_bridge_path);
+    LOGI("configured: socket=%s root=%d helper=%s bridge=%s topapp=%d",
+         s->cfg_socket_path, s->cfg_use_root, s->cfg_helper_path, s->cfg_bridge_path,
+         s->cfg_topapp_enable);
 }
 
 JNIEXPORT void JNICALL
@@ -908,6 +1056,7 @@ Java_com_anland_consumer_Native_nativeStop(
         disconnect(s->ctx);
         s->ctx = NULL;
     }
+    topapp_demote(s);   /* stopping the pipeline ends the producer's boost */
 
     // Disable clip listener on Java side
     if (g_jvm && s->clipboard_obj) {

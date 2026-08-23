@@ -33,7 +33,13 @@ public final class Native {
     // ---- instance API (delegates to the handle-taking natives) ----
 
     public void configure(String socketPath, boolean useRoot, String helperPath, String bridgePath) {
-        nativeConfigure(handle, socketPath, useRoot, helperPath, bridgePath);
+        nativeConfigure(handle, socketPath, useRoot, helperPath, bridgePath, false, null);
+    }
+
+    /** Full configure, including the foreground-scheduling (top-app) helper. */
+    public void configure(String socketPath, boolean useRoot, String helperPath, String bridgePath,
+                          boolean topAppEnable, String topAppPath) {
+        nativeConfigure(handle, socketPath, useRoot, helperPath, bridgePath, topAppEnable, topAppPath);
     }
     public void start(Surface surface, Object clipboardTarget, Object activityTarget) { nativeStart(handle, surface, clipboardTarget, activityTarget); }
     public void stop() { nativeStop(handle); }
@@ -60,7 +66,8 @@ public final class Native {
     private static native void nativeSetFocused(long handle, boolean focused);
 
     private static native void nativeConfigure(long handle, String socketPath, boolean useRoot,
-                                               String helperPath, String bridgePath);
+                                               String helperPath, String bridgePath,
+                                               boolean topAppEnable, String topAppPath);
 
     // With static natives there is no `thiz`, so native is handed the object it
     // calls back into (the Clipboard hosting nativeSetClipboardText /

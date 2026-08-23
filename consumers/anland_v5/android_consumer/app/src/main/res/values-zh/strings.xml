@@ -107,6 +107,8 @@
     <string name="second_window_open">打开第二个窗口</string>
     <string name="root_switch">使用 root 连接（辅助程序）</string>
     <string name="root_hint">启动一个 root 辅助程序（su）连接到套接字，并将连接传回应用。下次连接时生效（请重新打开应用）。</string>
+    <string name="topapp_switch">启用前台调度（root）</string>
+    <string name="topapp_hint">Linux 桌面渲染期间，root 辅助程序将其整个进程树移入 top-app cgroup 以前台优先级调度；断开连接时移回。下次连接时生效。</string>
     <string name="mic_switch">将麦克风转发到桌面</string>
     <string name="mic_hint">桌面音频始终通过本设备的扬声器播放。启用此项还会把麦克风反向发送到桌面。下次连接时生效（请重新打开应用）。</string>
     <string name="camera_switch">将摄像头转发到桌面</string>
