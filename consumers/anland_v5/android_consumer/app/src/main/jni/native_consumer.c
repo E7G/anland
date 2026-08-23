@@ -87,10 +87,12 @@ struct consumer_state {
     int  cfg_custom_height;
     bool cfg_topapp_enable;
     char cfg_topapp_path[512];
-    /* topapp_path snapshot taken under cfg_lock at the start of each
-     * do_connect(); topapp_promote/demote run on other threads later and only
-     * touch this copy, so they never contend on cfg_lock. */
+    char cfg_topapp_stops[192];   /* ":"-separated stop names; empty = defaults */
+    /* Snapshots taken under cfg_lock at the start of each do_connect();
+     * topapp_promote/demote run on other threads later and only touch these
+     * copies, so they never contend on cfg_lock. */
     char topapp_run_path[512];
+    char topapp_run_stops[192];
 
     /* Foreground-scheduling state: the producer process-tree root promoted to
      * top-app at exit-fallback, or 0 when nothing is promoted. Written by
@@ -491,7 +493,7 @@ static pid_t run_su_capture_pid(const char *cmd)
  * producer is connected right now, so the diag lookup has a live peer. */
 static pid_t topapp_promote(struct consumer_state *s, int data_fd)
 {
-    char cmd[sizeof(s->topapp_run_path) + 32];
+    char cmd[sizeof(s->topapp_run_path) + sizeof(s->topapp_run_stops) + 32];
 
     /* The inode identifies our end of the data socketpair; the helper resolves
      * it to the peer the producer holds. data_fd is live for this whole call
@@ -502,8 +504,14 @@ static pid_t topapp_promote(struct consumer_state *s, int data_fd)
         LOGE("settopapp: data fd not resolvable");
         return -1;
     }
-    snprintf(cmd, sizeof(cmd), "%s %llu", s->topapp_run_path,
-             (unsigned long long)st.st_ino);
+    /* Optional custom stop names ride along as a trailing stops=... token; an
+     * empty list makes the helper use its built-in defaults. */
+    if (s->topapp_run_stops[0] != '\0')
+        snprintf(cmd, sizeof(cmd), "%s %llu stops=%s", s->topapp_run_path,
+                 (unsigned long long)st.st_ino, s->topapp_run_stops);
+    else
+        snprintf(cmd, sizeof(cmd), "%s %llu", s->topapp_run_path,
+                 (unsigned long long)st.st_ino);
 
     pid_t root = run_su_capture_pid(cmd);
     if (root > 0)
@@ -542,6 +550,7 @@ static int do_connect(struct consumer_state *s)
     memcpy(helper_path, s->cfg_helper_path, sizeof(helper_path));
     memcpy(bridge_path, s->cfg_bridge_path, sizeof(bridge_path));
     memcpy(s->topapp_run_path, s->cfg_topapp_path, sizeof(s->topapp_run_path));
+    memcpy(s->topapp_run_stops, s->cfg_topapp_stops, sizeof(s->topapp_run_stops));
     bool topapp_enable = s->cfg_topapp_enable;
     pthread_mutex_unlock(&s->cfg_lock);
 
@@ -920,7 +929,8 @@ Java_com_anland_consumer_Native_nativeSetFocused(
 JNIEXPORT void JNICALL
 Java_com_anland_consumer_Native_nativeConfigure(
     JNIEnv *env, jclass clazz, jlong handle, jstring socketPath, jboolean useRoot,
-    jstring helperPath, jstring bridgePath, jboolean topappEnable, jstring topappPath)
+    jstring helperPath, jstring bridgePath, jboolean topappEnable, jstring topappPath,
+    jstring topappStops)
 {
     struct consumer_state *s = STATE(handle);
     if (!s)
@@ -935,10 +945,11 @@ Java_com_anland_consumer_Native_nativeConfigure(
     copy_jstring(env, bridgePath, s->cfg_bridge_path, sizeof(s->cfg_bridge_path));
     s->cfg_topapp_enable = (topappEnable == JNI_TRUE);
     copy_jstring(env, topappPath, s->cfg_topapp_path, sizeof(s->cfg_topapp_path));
+    copy_jstring(env, topappStops, s->cfg_topapp_stops, sizeof(s->cfg_topapp_stops));
     pthread_mutex_unlock(&s->cfg_lock);
-    LOGI("configured: socket=%s root=%d helper=%s bridge=%s topapp=%d",
+    LOGI("configured: socket=%s root=%d helper=%s bridge=%s topapp=%d stops=%s",
          s->cfg_socket_path, s->cfg_use_root, s->cfg_helper_path, s->cfg_bridge_path,
-         s->cfg_topapp_enable);
+         s->cfg_topapp_enable, s->cfg_topapp_stops);
 }
 
 JNIEXPORT void JNICALL

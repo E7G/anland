@@ -57,6 +57,7 @@ public class MainActivity extends Activity
     private static final String KEY_SOCKET_PATH = "socket_path";
     private static final String KEY_USE_ROOT = "use_root";
     static final String KEY_TOPAPP = "topapp_scheduling";
+    static final String KEY_TOPAPP_STOPS = "topapp_stops";
     private static final String KEY_MIC_ENABLED = "mic_enabled";
     private static final String KEY_CAMERA_ENABLED = "camera_enabled";
     // Latency presets in ms; 0 = engine default. Shared with SettingsActivity.
@@ -317,7 +318,9 @@ public class MainActivity extends Activity
         String bridgePath = getCacheDir().getAbsolutePath() + "/anland_fdbridge.sock";
         boolean topApp = prefs.getBoolean(KEY_TOPAPP, false);
         String topAppPath = getApplicationInfo().nativeLibraryDir + "/libsettopapp.so";
-        mNative.configure(sock, useRoot, helperPath, bridgePath, topApp, topAppPath);
+        // ":"-separated custom stop names for the tree walk; empty = helper defaults.
+        String topAppStops = prefs.getString(KEY_TOPAPP_STOPS, "").trim();
+        mNative.configure(sock, useRoot, helperPath, bridgePath, topApp, topAppPath, topAppStops);
         int customW = prefs.getInt("custom_width", 0);
         int customH = prefs.getInt("custom_height", 0);
         customScreenWidth = prefs.getInt("custom_width", 0);

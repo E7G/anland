@@ -987,6 +987,32 @@ public class SettingsActivity extends Activity {
         topappHint.setPadding(0, dp(4), 0, 0);
         root.addView(topappHint);
 
+        // Custom stop names for the tree walk: ":"-separated process names that
+        // mark the top of the desktop session (the helper walks up from the
+        // producer and uses the first ancestor carrying one of these names as
+        // the tree root). Empty = the helper's built-in list (init, systemd,
+        // zygote, su, ...). A custom list REPLACES the default.
+        TextView topappStopsLabel = new TextView(this);
+        topappStopsLabel.setText(R.string.topapp_stops_label);
+        topappStopsLabel.setTextSize(14);
+        topappStopsLabel.setTextColor(Color.GRAY);
+        topappStopsLabel.setPadding(0, dp(12), 0, dp(4));
+        root.addView(topappStopsLabel);
+
+        EditText topappStopsInput = new EditText(this);
+        topappStopsInput.setSingleLine(true);
+        topappStopsInput.setText(prefs.getString(MainActivity.KEY_TOPAPP_STOPS, ""));
+        topappStopsInput.setHint(R.string.topapp_stops_hint);
+        topappStopsInput.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void afterTextChanged(Editable s) {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putString(MainActivity.KEY_TOPAPP_STOPS, s.toString().trim()).apply();
+            }
+        });
+        root.addView(topappStopsInput);
+
         // Forward microphone: capture the device mic and expose it to the Linux
         // desktop as a recording source. Requires the RECORD_AUDIO permission, which
         // MainActivity requests when this is on.

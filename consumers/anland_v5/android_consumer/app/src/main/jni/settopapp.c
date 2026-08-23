@@ -19,8 +19,8 @@
  * boundaries so we never touch init, zygote or the su chain), then move that
  * whole tree into the top-app groups.
  *
- *   usage: libsettopapp.so <data_socket_inode>            -> move tree to top-app
- *          libsettopapp.so <pid> restore                  -> move tree back to "/"
+ *   usage: libsettopapp.so <data_socket_inode> [stops=n1:n2:...]  -> move tree to top-app
+ *          libsettopapp.so <pid> restore                          -> move tree back to "/"
  *
  * After a successful move the helper prints the tree-root pid on stdout, so the
  * consumer can cache it and later restore with "<pid> restore" without doing
@@ -210,12 +210,58 @@ static pid_t get_ppid(pid_t pid)
  * `systemd --user`, not of kwin) -- is included in the move. Writing the
  * init's own pid into a cgroup file is harmless: it stays put (its cgroup is
  * pinned/immutable or it just moves with the tree, which is exactly what we
- * want for the session manager). */
-static const char *const stop_names[] = {
+ * want for the session manager).
+ *
+ * Overridable by the caller: `settopapp <inode> stops=name1:name2:...`
+ * (":"-separated comm names). A custom list REPLACES the default; include
+ * whatever you need from it explicitly. */
+static const char *const default_stop_names[] = {
     "init", "systemd", "zygote", "zygote64", "app_process",
     "magisk", "magiskd", "su", "daemonsu", "supersu",
     NULL
 };
+
+/* Active stop-name list: points at default_stop_names, or at the parsed
+ * custom list set once in main() before any lookup. Read-only afterwards. */
+static const char *const *stop_names = default_stop_names;
+
+/* Parse "a:b:c" into a NULL-terminated malloc'd vector. Returns NULL on
+ * failure (caller falls back to the default list). Empty segments between
+ * separators are skipped. */
+static const char *const *parse_stop_names(const char *spec)
+{
+    size_t cap = 8, n = 0;
+    const char **v = malloc(cap * sizeof(char *));
+    if (!v)
+        return NULL;
+
+    const char *p = spec;
+    while (*p) {
+        const char *sep = strchr(p, ':');
+        size_t len = sep ? (size_t)(sep - p) : strlen(p);
+        if (len > 0) {
+            char *name = strndup(p, len);
+            if (!name)
+                break;
+            if (n + 1 >= cap) {
+                const char **nv = realloc(v, (cap *= 2) * sizeof(char *));
+                if (!nv)
+                    break;
+                v = nv;
+            }
+            v[n++] = name;
+        }
+        if (!sep)
+            break;
+        p = sep + 1;
+    }
+    if (n == 0) {
+        free(v);
+        return NULL;
+    }
+    v[n] = NULL;
+    return v;
+}
 
 /* True when `pid` itself carries one of the stop names (comm, 15 chars max). */
 static bool is_stop_name(pid_t pid)
@@ -407,9 +453,22 @@ static int move_tree(pid_t root, const char *cpu_procs, const char *cpuset_procs
 int main(int argc, char **argv)
 {
     if (argc < 2) {
-        LOGE("usage: %s <data_socket_inode>", argv[0]);
+        LOGE("usage: %s <data_socket_inode> [stops=name1:name2:...]", argv[0]);
         LOGE("       %s <pid> restore", argv[0]);
         return 1;
+    }
+
+    /* Optional custom stop-name list ("stops=init:my_init:..."), replacing the
+     * built-in one. Accepted in either mode; only the promote path consults
+     * it. Parsed before anything else so failures here fail fast. */
+    for (int i = 2; i < argc; i++) {
+        if (strncmp(argv[i], "stops=", 6) == 0) {
+            const char *const *custom = parse_stop_names(argv[i] + 6);
+            if (custom)
+                stop_names = custom;
+            else
+                LOGE("bad stops= spec '%s', using defaults", argv[i] + 6);
+        }
     }
 
     if (argc >= 3 && strcmp(argv[2], "restore") == 0) {
