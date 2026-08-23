@@ -8,9 +8,6 @@ import android.util.Log;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.util.Arrays;
 
 /**
  * Root-backed bridge for the optional on-screen gamepad.
@@ -22,7 +19,8 @@ import java.util.Arrays;
 public final class GamepadBridge {
     private static final String TAG = "AnlandGamepad";
     private static final Object LOCK = new Object();
-    private static final byte[] NEUTRAL = new byte[16];
+    private static final byte[] ZERO_PACKET = new byte[16];
+    private static final byte[] statePacket = new byte[16];
 
     private static LocalServerSocket server;
     private static LocalSocket client;
@@ -30,7 +28,9 @@ public final class GamepadBridge {
     private static Process helper;
     private static Thread worker;
     private static String targetContainer = "";
-    private static byte[] lastPacket = NEUTRAL.clone();
+    private static int lastButtons;
+    private static int lastLx, lastLy, lastRx, lastRy;
+    private static int lastLt, lastRt, lastHatX, lastHatY;
     private static int generation = 0;
     private static volatile String lastError = "";
 
@@ -47,7 +47,7 @@ public final class GamepadBridge {
             stopLocked();
             final int myGeneration = ++generation;
             targetContainer = target;
-            lastPacket = NEUTRAL.clone();
+            resetStateLocked();
             lastError = "";
             worker = new Thread(() -> runBridge(app, target, myGeneration),
                     "anland-gamepad-bridge");
@@ -129,7 +129,7 @@ public final class GamepadBridge {
                 }
                 client = accepted;
                 output = acceptedOut;
-                writePacketLocked(lastPacket);
+                writePacketLocked(statePacket);
                 lastError = "";
                 Log.i(TAG, "virtual gamepad connected"
                         + (containerName.isEmpty() ? "" : " for " + containerName));
@@ -165,30 +165,51 @@ public final class GamepadBridge {
     public static void sendState(int buttons,
                                  int lx, int ly, int rx, int ry,
                                  int lt, int rt, int hatX, int hatY) {
-        ByteBuffer b = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
-        b.putInt(buttons);
-        b.putShort(clampAxis(lx));
-        b.putShort(clampAxis(ly));
-        b.putShort(clampAxis(rx));
-        b.putShort(clampAxis(ry));
-        b.put((byte) clamp(lt, 0, 255));
-        b.put((byte) clamp(rt, 0, 255));
-        b.put((byte) clamp(hatX, -1, 1));
-        b.put((byte) clamp(hatY, -1, 1));
-        byte[] packet = b.array();
+        int clampedLx = clamp(lx, -32767, 32767);
+        int clampedLy = clamp(ly, -32767, 32767);
+        int clampedRx = clamp(rx, -32767, 32767);
+        int clampedRy = clamp(ry, -32767, 32767);
+        int clampedLt = clamp(lt, 0, 255);
+        int clampedRt = clamp(rt, 0, 255);
+        int clampedHatX = clamp(hatX, -1, 1);
+        int clampedHatY = clamp(hatY, -1, 1);
 
         synchronized (LOCK) {
-            if (Arrays.equals(packet, lastPacket))
+            if (buttons == lastButtons
+                    && clampedLx == lastLx && clampedLy == lastLy
+                    && clampedRx == lastRx && clampedRy == lastRy
+                    && clampedLt == lastLt && clampedRt == lastRt
+                    && clampedHatX == lastHatX && clampedHatY == lastHatY) {
                 return;
-            lastPacket = packet;
-            writePacketLocked(packet);
+            }
+
+            lastButtons = buttons;
+            lastLx = clampedLx;
+            lastLy = clampedLy;
+            lastRx = clampedRx;
+            lastRy = clampedRy;
+            lastLt = clampedLt;
+            lastRt = clampedRt;
+            lastHatX = clampedHatX;
+            lastHatY = clampedHatY;
+
+            putIntLe(statePacket, 0, buttons);
+            putShortLe(statePacket, 4, clampedLx);
+            putShortLe(statePacket, 6, clampedLy);
+            putShortLe(statePacket, 8, clampedRx);
+            putShortLe(statePacket, 10, clampedRy);
+            statePacket[12] = (byte) clampedLt;
+            statePacket[13] = (byte) clampedRt;
+            statePacket[14] = (byte) clampedHatX;
+            statePacket[15] = (byte) clampedHatY;
+            writePacketLocked(statePacket);
         }
     }
 
     public static void neutralize() {
         synchronized (LOCK) {
-            lastPacket = NEUTRAL.clone();
-            writePacketLocked(lastPacket);
+            resetStateLocked();
+            writePacketLocked(statePacket);
         }
     }
 
@@ -202,7 +223,7 @@ public final class GamepadBridge {
     private static void stopLocked() {
         if (output != null) {
             try {
-                output.write(NEUTRAL);
+                output.write(ZERO_PACKET);
                 output.flush();
             } catch (Exception ignored) {}
         }
@@ -221,7 +242,7 @@ public final class GamepadBridge {
 
         worker = null;
         targetContainer = "";
-        lastPacket = NEUTRAL.clone();
+        resetStateLocked();
     }
 
     public static boolean isConnected() {
@@ -249,8 +270,24 @@ public final class GamepadBridge {
         }
     }
 
-    private static short clampAxis(int v) {
-        return (short) clamp(v, -32767, 32767);
+    private static void resetStateLocked() {
+        lastButtons = 0;
+        lastLx = lastLy = lastRx = lastRy = 0;
+        lastLt = lastRt = lastHatX = lastHatY = 0;
+        for (int i = 0; i < statePacket.length; i++)
+            statePacket[i] = 0;
+    }
+
+    private static void putIntLe(byte[] out, int offset, int value) {
+        out[offset] = (byte) value;
+        out[offset + 1] = (byte) (value >>> 8);
+        out[offset + 2] = (byte) (value >>> 16);
+        out[offset + 3] = (byte) (value >>> 24);
+    }
+
+    private static void putShortLe(byte[] out, int offset, int value) {
+        out[offset] = (byte) value;
+        out[offset + 1] = (byte) (value >>> 8);
     }
 
     private static int clamp(int v, int min, int max) {
