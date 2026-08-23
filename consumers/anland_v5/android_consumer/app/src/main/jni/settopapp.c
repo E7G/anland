@@ -203,9 +203,14 @@ static pid_t get_ppid(pid_t pid)
     return (pid_t)ppid;
 }
 
-/* Names whose subtrees we never enter when walking up: they are container
- * init processes / Android framework roots / the su chain itself. Stopping
- * here keeps the moved tree exactly the producer session. */
+/* Names that mark the TOP of the producer session: container init processes /
+ * Android framework roots / the su chain. The walk stops ON one of these and
+ * uses IT as the tree root, so every process it spawned -- the compositor AND
+ * the apps it activated (KDE launches konsole etc. as direct children of
+ * `systemd --user`, not of kwin) -- is included in the move. Writing the
+ * init's own pid into a cgroup file is harmless: it stays put (its cgroup is
+ * pinned/immutable or it just moves with the tree, which is exactly what we
+ * want for the session manager). */
 static const char *const stop_names[] = {
     "init", "systemd", "zygote", "zygote64", "app_process",
     "magisk", "magiskd", "su", "daemonsu", "supersu",
@@ -232,16 +237,19 @@ static bool is_stop_name(pid_t pid)
     return hit;
 }
 
-/* Walk up from `pid` to the highest ancestor that is still part of the
- * producer's own session (stops before init/systemd/zygote/su and friends).
- * Guards against loops (broken /proc) with a depth cap. */
+/* Walk up from `pid` to the session's init process (init/systemd/zygote/su
+ * or pid 1's direct child) and return THAT as the tree root, so the whole
+ * desktop session -- compositor plus every app the session manager spawned
+ * -- is one tree. Guards against loops (broken /proc) with a depth cap. */
 static pid_t find_tree_root(pid_t pid)
 {
     pid_t cur = pid;
     for (int depth = 0; depth < 32; depth++) {
-        pid_t ppid = get_ppid(cur);
-        if (ppid <= 1 || is_stop_name(ppid))
+        if (is_stop_name(cur))
             return cur;
+        pid_t ppid = get_ppid(cur);
+        if (ppid <= 1)
+            return cur;   /* orphaned / reparented: this is the best root */
         cur = ppid;
     }
     return cur;
