@@ -13,6 +13,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <sys/eventfd.h>
+#include <signal.h>
 #include <time.h>
 #include <dirent.h>
 #include <unistd.h>
@@ -49,6 +51,10 @@ struct consumer_state {
     display_ctx *ctx;
     pthread_t render_thread;
     volatile bool running;
+    /* Lifecycle cancellation for every potentially blocking render wait.  The
+     * Android Activity must be able to stop the native pipeline without waiting
+     * for a 5 s fence timeout or a root-helper handshake timeout. */
+    int stop_efd;
 
     //Note: it is Deamon's Reconnect, not Fallback Flag
     //Fallback is maintained by display lib, and the consumer should not care about it.
@@ -105,6 +111,34 @@ struct consumer_state {
      * so the camera layer can tell instances apart (see camera_service.c). */
     struct service_info camera_svc;
 };
+
+static void signal_render_stop(struct consumer_state *s)
+{
+    if (s->stop_efd >= 0) {
+        eventfd_t one = 1;
+        eventfd_write(s->stop_efd, one);
+    }
+}
+
+static void clear_render_stop(struct consumer_state *s)
+{
+    if (s->stop_efd < 0)
+        return;
+    eventfd_t value;
+    while (eventfd_read(s->stop_efd, &value) == 0)
+        ;
+}
+
+static bool wait_for_render_stop(struct consumer_state *s, int timeout_ms)
+{
+    struct pollfd pfd = { .fd = s->stop_efd, .events = POLLIN };
+    int ret = poll(&pfd, 1, timeout_ms);
+    if (ret > 0 && (pfd.revents & (POLLIN | POLLERR | POLLHUP))) {
+        clear_render_stop(s);
+        return true;
+    }
+    return !s->running;
+}
 
 static int collect_dmabufs(struct consumer_state *s)
 {
@@ -329,7 +363,8 @@ static void stop_event_thread(struct consumer_state *s)
  * passes the connected fd back over the bridge. Returns the received fd (caller
  * owns it) or -1 on failure.
  */
-static int recv_fd_via_root_helper(const char *daemon_sock,
+static int recv_fd_via_root_helper(struct consumer_state *s,
+                                   const char *daemon_sock,
                                    const char *helper_path,
                                    const char *bridge_path)
 {
@@ -384,10 +419,17 @@ static int recv_fd_via_root_helper(const char *daemon_sock,
         _exit(127);   /* su not found / exec failed */
     }
 
-    /* Wait for the helper to connect (root prompt may take a while). */
+    /* Wait for the helper to connect (root prompt may take a while), but keep
+     * the lifecycle stop fd in the same poll.  The old single 30-second poll
+     * was enough to wedge MainActivity.onPause() in pthread_join(). */
     int fd = -1;
-    struct pollfd pfd = { .fd = lfd, .events = POLLIN };
-    if (poll(&pfd, 1, 30000) > 0 && (pfd.revents & POLLIN)) {
+    struct pollfd pfds[2] = {
+        { .fd = lfd, .events = POLLIN },
+        { .fd = s->stop_efd, .events = POLLIN },
+    };
+    int ret = poll(pfds, 2, 30000);
+    bool cancelled = ret > 0 && (pfds[1].revents & (POLLIN | POLLERR | POLLHUP));
+    if (!cancelled && ret > 0 && (pfds[0].revents & POLLIN)) {
         int cfd = accept(lfd, NULL, NULL);
         if (cfd >= 0) {
             char b;
@@ -397,10 +439,16 @@ static int recv_fd_via_root_helper(const char *daemon_sock,
             close(cfd);
         }
     } else {
-        LOGE("root helper: timed out waiting for helper connection");
+        if (cancelled)
+            LOGI("root helper: cancelled by lifecycle stop");
+        else
+            LOGE("root helper: timed out waiting for helper connection");
     }
 
     int status = 0;
+    /* Do not leave a su process behind after a timeout or Activity stop. */
+    if (cancelled || ret == 0)
+        kill(pid, SIGTERM);
     waitpid(pid, &status, 0);
     close(lfd);
     unlink(bridge_path);
@@ -475,7 +523,7 @@ static int do_connect(struct consumer_state *s)
          s->screen_w, s->screen_h, s->buf_count, use_root);
 
     if (use_root) {
-        int ctrl_fd = recv_fd_via_root_helper(sock, helper_path, bridge_path);
+        int ctrl_fd = recv_fd_via_root_helper(s, sock, helper_path, bridge_path);
         if (ctrl_fd < 0) {
             LOGE("root helper connect failed");
             return -1;
@@ -605,7 +653,7 @@ static void *render_thread_func(void *arg)
         if (s->need_reconnect) {
             LOGI("reconnecting...");
             if (do_connect(s) < 0) {
-                usleep(500000);
+                wait_for_render_stop(s, 500);
                 continue;
             }
         }
@@ -620,9 +668,17 @@ static void *render_thread_func(void *arg)
          * already safe to write (SurfaceFlinger done reading the previous frame)
          * before we hand it to the producer. A sync_file fd signals POLLIN. */
         if (acqfence >= 0) {
-            struct pollfd fpfd = { .fd = acqfence, .events = POLLIN };
-            poll(&fpfd, 1, 1000);
+            struct pollfd fpdfs[2] = {
+                { .fd = acqfence, .events = POLLIN },
+                { .fd = s->stop_efd, .events = POLLIN },
+            };
+            int wait_ret = poll(fpdfs, 2, 1000);
             close(acqfence);
+            if (wait_ret > 0 && (fpdfs[1].revents & POLLIN)) {
+                clear_render_stop(s);
+                api.queueBuffer(s->window, anb, -1);
+                break;
+            }
         }
 
         int idx = -1;
@@ -649,7 +705,14 @@ static void *render_thread_func(void *arg)
          * over data_fd (reverse). Queue with it so SurfaceFlinger waits GPU-side
          * before scanout -- this lets the producer submit before its GPU render
          * completes (no glFinish stall). rfence == -1 falls back to "ready now". */
-        int rfence = refresh_done(s->ctx);
+        int rfence = refresh_done_cancelable(s->ctx, s->stop_efd);
+        if (rfence == -2) {
+            /* Stop was requested while waiting for the producer. Return the
+             * dequeued slot before leaving, otherwise old BufferQueue keeps a
+             * slot owned by this dead consumer and the next start can stall. */
+            api.queueBuffer(s->window, anb, -1);
+            break;
+        }
         api.queueBuffer(s->window, anb, rfence);
 
         // BufferQueue usually provides vsync back-pressure, but fallback/reconnect
@@ -667,11 +730,12 @@ static void *render_thread_func(void *arg)
             period_ns = 8333333ULL;
         if (elapsed_ns < period_ns) {
             uint64_t remain = period_ns - elapsed_ns;
-            struct timespec delay = {
-                .tv_sec = (time_t)(remain / 1000000000ULL),
-                .tv_nsec = (long)(remain % 1000000000ULL),
-            };
-            nanosleep(&delay, NULL);
+            /* A stop-aware wait avoids sleeping through an Activity transition. */
+            int delay_ms = (int)(remain / 1000000ULL);
+            if (delay_ms < 1)
+                delay_ms = 1;
+            if (wait_for_render_stop(s, delay_ms))
+                break;
         }
     }
 
@@ -710,6 +774,13 @@ Java_com_anland_consumer_Native_nativeCreate(JNIEnv *env, jclass clazz)
         return 0;
     pthread_mutex_init(&s->lock, NULL);
     pthread_mutex_init(&s->cfg_lock, NULL);
+    s->stop_efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (s->stop_efd < 0) {
+        pthread_mutex_destroy(&s->cfg_lock);
+        pthread_mutex_destroy(&s->lock);
+        free(s);
+        return 0;
+    }
     strncpy(s->cfg_socket_path, "/data/local/tmp/display_daemon.sock",
             sizeof(s->cfg_socket_path) - 1);
     s->audio = audio_create();
@@ -729,6 +800,7 @@ Java_com_anland_consumer_Native_nativeDestroy(JNIEnv *env, jclass clazz, jlong h
     pthread_mutex_lock(&s->lock);
     if (s->running) {
         s->running = false;
+        signal_render_stop(s);
         pthread_mutex_unlock(&s->lock);
         pthread_join(s->render_thread, NULL);
         pthread_mutex_lock(&s->lock);
@@ -765,6 +837,7 @@ Java_com_anland_consumer_Native_nativeDestroy(JNIEnv *env, jclass clazz, jlong h
     s->activity_obj = NULL;
     pthread_mutex_destroy(&s->cfg_lock);
     pthread_mutex_destroy(&s->lock);
+    close(s->stop_efd);
     LOGI("instance %p destroyed", (void *)s);
     free(s);
 }
@@ -838,10 +911,12 @@ Java_com_anland_consumer_Native_nativeStart(
 
     if (s->running) {
         s->running = false;
+        signal_render_stop(s);
         pthread_mutex_unlock(&s->lock);
         pthread_join(s->render_thread, NULL);
         pthread_mutex_lock(&s->lock);
     }
+    clear_render_stop(s);
 
     if (s->ctx) {
         disconnect(s->ctx);
@@ -903,6 +978,7 @@ Java_com_anland_consumer_Native_nativeStop(
 
     if (s->running) {
         s->running = false;
+        signal_render_stop(s);
         pthread_mutex_unlock(&s->lock);
         pthread_join(s->render_thread, NULL);
         pthread_mutex_lock(&s->lock);

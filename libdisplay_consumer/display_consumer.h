@@ -12,6 +12,11 @@ int  set_screen_info(display_ctx *ctx, uint32_t width, uint32_t height, uint32_t
 int  push_dmabufs(display_ctx *ctx, const int *fds, const struct buf_info *infos, int count);
 int  select_dmabuf(display_ctx *ctx, int idx);
 int  refresh_done(display_ctx *ctx);
+/* Variant used by Android's lifecycle/render worker.  A stop fd makes the
+ * fence wait interruptible, so nativeStop() never has to wait for the full
+ * frame timeout while running on Android's UI thread.  Returns -2 when the
+ * cancel fd fired; otherwise the same values as refresh_done(). */
+int  refresh_done_cancelable(display_ctx *ctx, int cancel_fd);
 int  push_input_event(display_ctx *ctx, const struct InputEvent *event);
 int  push_input_event_with_length(display_ctx *ctx, const struct InputEvent *event, void* payload, size_t size);
 int  set_fallback_callback(display_ctx *ctx, void (*on_fallback)(void *), void *userdata);

@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.18)
 project(anland_consumer C CXX)
 
-set(LIBDISPLAY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../..)
+# CMake is configured from app/src/main/jni.  The shared protocol/display
+# libraries live at the repository root, seven levels above this directory.
+set(LIBDISPLAY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../..)
 
 # ---------- Tracy profiler (https://github.com/wolfpld/tracy) ----------
 # Client is fetched at configure time and linked in as a static C++ library;

@@ -12,6 +12,7 @@
 #include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 struct display_ctx {
@@ -205,6 +206,16 @@ static int send_hello_fds(display_ctx *ctx)
 
 static void enter_fallback(display_ctx *ctx);
 
+/* A malformed/stalled daemon handshake must not make Android's lifecycle
+ * thread wait forever in recv_all().  The render worker retries the whole
+ * connection after this short, local-socket timeout. */
+static void set_handshake_timeout(int fd)
+{
+    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+
 static int push_dmabufs_internal(display_ctx *ctx)
 {
     if (ctx->stored_count <= 0)
@@ -326,6 +337,7 @@ int connect_to_deamon_with_fd(display_ctx **out, int ctrl_fd)
     ctx->ctrl_fd = ctrl_fd;
     if (ctx->ctrl_fd < 0)
         goto fail;
+    set_handshake_timeout(ctx->ctrl_fd);
 
     /* buf_ready_efd is the consumer->producer pacing eventfd; fence_fd is created as a
      * socketpair inside send_hello_fds(). */
@@ -427,7 +439,7 @@ int select_dmabuf(display_ctx *ctx, int idx)
  * separate eventfd, no cross-channel ordering) and the optional fence rides as
  * SCM_RIGHTS ancillary data. Returns the fence fd (caller owns it), or -1 if none /
  * on error. */
-int refresh_done(display_ctx *ctx)
+int refresh_done_cancelable(display_ctx *ctx, int cancel_fd)
 {
     if (!ctx->buffer_pending)
         return -1;
@@ -435,9 +447,15 @@ int refresh_done(display_ctx *ctx)
     /* Block (with a 5s safety timeout) on the fence channel: the arrival of the
      * producer's per-frame message is the render-done signal. Timeout / no POLLIN
      * (producer stalled or gone) -> fall back so the render thread never hangs. */
-    struct pollfd pfd = { .fd = ctx->fence_fd, .events = POLLIN };
-    int ret = poll(&pfd, 1, 5000);
-    if (ret <= 0 || !(pfd.revents & POLLIN)) {
+    struct pollfd pfds[2] = {
+        { .fd = ctx->fence_fd, .events = POLLIN },
+        { .fd = cancel_fd, .events = POLLIN },
+    };
+    nfds_t nfds = cancel_fd >= 0 ? 2 : 1;
+    int ret = poll(pfds, nfds, 5000);
+    if (cancel_fd >= 0 && ret > 0 && (pfds[1].revents & POLLIN))
+        return -2;
+    if (ret <= 0 || !(pfds[0].revents & POLLIN)) {
         enter_fallback(ctx);
         return -1;
     }
@@ -472,6 +490,11 @@ int refresh_done(display_ctx *ctx)
             memcpy(&rfence, CMSG_DATA(c), sizeof(int));
     }
     return rfence;
+}
+
+int refresh_done(display_ctx *ctx)
+{
+    return refresh_done_cancelable(ctx, -1);
 }
 
 int push_input_event(display_ctx *ctx, const struct InputEvent *event)
