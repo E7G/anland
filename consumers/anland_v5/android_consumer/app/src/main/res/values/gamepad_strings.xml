@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="gamepad_settings_title">Virtual gamepad</string>
+    <string name="gamepad_settings_subtitle">Optional on-screen Xbox-style controller</string>
+    <string name="gamepad_settings_description">Show an on-screen controller in Anland and expose it to Linux as a standard evdev gamepad.</string>
+    <string name="gamepad_enable">Enable virtual gamepad</string>
+    <string name="gamepad_opacity">Control opacity</string>
+    <string name="gamepad_layout_summary">Controls: left/right sticks, D-pad, A/B/X/Y, LT/RT, LB/RB, Back/Start/Guide and L3/R3.</string>
+    <string name="gamepad_requirements">Root access is required. On Droidspaces, Anland exposes only its own virtual event device to the active container; host input devices remain hidden.</string>
+</resources>

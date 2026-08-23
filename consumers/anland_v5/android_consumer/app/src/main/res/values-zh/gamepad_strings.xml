@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="gamepad_settings_title">虚拟手柄</string>
+    <string name="gamepad_settings_subtitle">可选的 Xbox 风格屏幕手柄</string>
+    <string name="gamepad_settings_description">在 Anland 画面上显示触屏手柄，并在 Linux 中提供标准 evdev 游戏手柄设备。</string>
+    <string name="gamepad_enable">启用虚拟手柄</string>
+    <string name="gamepad_opacity">控件透明度</string>
+    <string name="gamepad_layout_summary">包含：左右摇杆、十字键、A/B/X/Y、LT/RT、LB/RB、Back/Start/Guide、L3/R3。</string>
+    <string name="gamepad_requirements">需要 Root 权限。用于 Droidspaces 时，Anland 只会把自己创建的虚拟手柄设备暴露给当前容器，不会开放宿主机的其它输入设备。</string>
+</resources>

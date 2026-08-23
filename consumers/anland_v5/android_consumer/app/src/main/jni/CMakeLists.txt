@@ -96,3 +96,18 @@ set_target_properties(inputgrab PROPERTIES
 )
 
 target_link_libraries(inputgrab log)
+
+# Optional virtual-gamepad root helper. It owns /dev/uinput on the Android host,
+# creates one Xbox-compatible evdev device, and (when launched from Droidspaces)
+# exposes only that event node inside the selected container mount namespace.
+add_executable(gamepadhelper
+    gamepad_helper.c
+)
+
+set_target_properties(gamepadhelper PROPERTIES
+    PREFIX "lib"
+    OUTPUT_NAME "gamepadhelper"
+    SUFFIX ".so"
+)
+
+target_link_libraries(gamepadhelper log)

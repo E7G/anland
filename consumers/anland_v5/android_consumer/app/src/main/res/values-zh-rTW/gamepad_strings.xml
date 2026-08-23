@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="gamepad_settings_title">虛擬手把</string>
+    <string name="gamepad_settings_subtitle">可選的 Xbox 風格螢幕手把</string>
+    <string name="gamepad_settings_description">在 Anland 畫面上顯示觸控手把，並在 Linux 中提供標準 evdev 遊戲手把裝置。</string>
+    <string name="gamepad_enable">啟用虛擬手把</string>
+    <string name="gamepad_opacity">控制項透明度</string>
+    <string name="gamepad_layout_summary">包含：左右搖桿、十字鍵、A/B/X/Y、LT/RT、LB/RB、Back/Start/Guide、L3/R3。</string>
+    <string name="gamepad_requirements">需要 Root 權限。用於 Droidspaces 時，Anland 只會把自己建立的虛擬手把裝置提供給目前容器，不會開放宿主機的其他輸入裝置。</string>
+</resources>

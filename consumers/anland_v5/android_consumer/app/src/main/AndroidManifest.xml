@@ -15,6 +15,7 @@
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <application
+        android:name=".AnlandApplication"
         android:label="Anland"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -74,5 +75,11 @@
                 <action android:name="android.intent.action.MAIN"/>
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".GamepadSettingsActivity"
+            android:exported="false"
+            android:enableOnBackInvokedCallback="false"
+            android:theme="@style/AnlandSettingsTheme" />
     </application>
 </manifest>
