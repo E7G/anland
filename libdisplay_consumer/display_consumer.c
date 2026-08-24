@@ -538,18 +538,24 @@ int poll_output_event(display_ctx *ctx, struct OutputEvent *event, int timeout_m
         return -1;
     }
 
+    /* Consume the message directly -- no MSG_PEEK pre-check. The producer ->
+     * consumer direction only ever carries OUTPUT_EVENT (render-done moved to
+     * the dedicated fence channel) and both push_output_event* variants frame
+     * it at exactly sizeof(struct OutputEvent), so what to read next is fully
+     * determined; the peek cost one extra syscall per event. A mismatched
+     * header can only mean the stream desynced: fall back rather than leaving
+     * bytes wedged in the socket. */
     uint8_t msg_buf[sizeof(struct data_msg) + sizeof(struct OutputEvent)];
-    ssize_t n = recv(ctx->data_fd, msg_buf, sizeof(msg_buf), MSG_PEEK);
-    if (n < (ssize_t)sizeof(struct data_msg))
-        return 0;
+    if (recv_all(ctx->data_fd, msg_buf, sizeof(msg_buf)) < 0)
+        return -1;
 
     struct data_msg hdr;
     memcpy(&hdr, msg_buf, sizeof(hdr));
-    if (hdr.type != DATA_MSG_OUTPUT_EVENT)
-        return 0;
-
-    if (recv_all(ctx->data_fd, msg_buf, sizeof(struct data_msg) + sizeof(struct OutputEvent)) < 0)
+    if (hdr.type != DATA_MSG_OUTPUT_EVENT || hdr.size != sizeof(struct OutputEvent)) {
+        enter_fallback(ctx);
         return -1;
+    }
+
     memcpy(event, msg_buf + sizeof(struct data_msg), sizeof(*event));
     return 1;
 }

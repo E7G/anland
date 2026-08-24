@@ -314,18 +314,24 @@ int poll_input_event(display_ctx *ctx, struct InputEvent *event, int timeout_ms)
         return -1;
     }
 
+    /* Consume the message directly -- no MSG_PEEK pre-check. The stream framing
+     * guarantees the next message is an INPUT_EVENT: EXTEND_FDS is only sent
+     * immediately after the RESOURCE event announcing it (the caller drains it
+     * with poll_input_event_extend_fds before polling again) and BUFS_READY
+     * only at the handshake (drained by receive_dmabufs before fallback is
+     * cleared). The peek cost one extra syscall per event; a header mismatch
+     * here can only mean the stream desynced, so fall back instead of leaving
+     * unconsumed bytes wedged in the socket. */
     uint8_t msg_buf[sizeof(struct data_msg) + sizeof(struct InputEvent)];
-    ssize_t n = recv(ctx->data_fd, msg_buf, sizeof(msg_buf), MSG_PEEK);
-    if (n < (ssize_t)sizeof(struct data_msg))
-        return 0;
+    if (recv_all(ctx->data_fd, msg_buf, sizeof(msg_buf)) < 0)
+        return -1;
 
     struct data_msg hdr;
     memcpy(&hdr, msg_buf, sizeof(hdr));
-    if (hdr.type != DATA_MSG_INPUT_EVENT)
-        return 0;
-
-    if (recv_all(ctx->data_fd, msg_buf, sizeof(struct data_msg) + sizeof(struct InputEvent)) < 0)
+    if (hdr.type != DATA_MSG_INPUT_EVENT || hdr.size != sizeof(struct InputEvent)) {
+        enter_fallback(ctx);
         return -1;
+    }
 
     memcpy(event, msg_buf + sizeof(struct data_msg), sizeof(*event));
     return 1;
