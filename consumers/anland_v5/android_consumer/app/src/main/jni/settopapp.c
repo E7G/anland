@@ -1,30 +1,54 @@
 /*
  * settopapp — a tiny root helper for the "foreground scheduling" feature.
  *
- * When the producer (the Linux desktop compositor) connects to the display
- * daemon, the consumer wants the whole producer process tree moved into the
- * Android "top-app" cpuset/schedtune groups so it gets foreground CPU priority
- * while it renders. The consumer cannot see the producer's pid directly: its
+ * While the producer (the Linux desktop compositor, usually inside a PID
+ * namespace/container) renders the display, the consumer wants its processes
+ * moved into the Android "top-app" cpuset/cpuctl groups so they get foreground
+ * CPU priority. The consumer cannot see the producer's pid directly: its
  * data/fence/audio sockets are socketpairs the consumer itself created and
  * passed along via SCM_RIGHTS, and a socketpair's SO_PEERCRED reports the
  * creator, not whoever holds the other end now.
  *
  * So the reverse lookup runs as root here instead, via NETLINK_INET_DIAG
- * (UNIX_DIAG): given the *inode* of the consumer's end of the data socketpair
- * (the consumer reads it from /proc/self/fd before exec'ing this helper), the
- * kernel reports the peer socket's inode; scanning /proc for a process whose
- * fds include that inode
- * finds the producer process holding the other end. From there we walk up to
- * the root of the producer's own process tree (stopping at container/superuser
- * boundaries so we never touch init, zygote or the su chain), then move that
- * whole tree into the top-app groups.
+ * (UNIX_DIAG): given the *inode* of the consumer's end of the data socketpair,
+ * the kernel reports the peer socket's inode; scanning /proc for a process
+ * whose fds include that inode finds the producer process holding the other
+ * end.
  *
- *   usage: libsettopapp.so <data_socket_inode> [stops=n1:n2:...]  -> move tree to top-app
- *          libsettopapp.so <pid> restore                          -> move tree back to "/"
+ * Two usages:
  *
- * After a successful move the helper prints the tree-root pid on stdout, so the
- * consumer can cache it and later restore with "<pid> restore" without doing
- * the lookup again.
+ *   libsettopapp.so <data_socket_inode> [stops=n1:n2:...] noset
+ *       -> resolve the producer and print the HOST pid of an "anchor"
+ *          process: the top of the producer's session tree (found by walking
+ *          PPIDs upward, stopping at container/superuser boundaries). The
+ *          anchor's PID namespace is the container's; the printed host pid is
+ *          what later "set" invocations use to enter that namespace. Nothing
+ *          is moved. The optional custom stop-name list works as with the
+ *          tree promote below.
+ *
+ *   libsettopapp.so set <anchor_host_pid> <container_pid> opt=on|off
+ *                    [settree=true|false] [stops=n1:n2:...]
+ *       -> O(1) foreground-scheduling switch. The helper enters the anchor's
+ *          PID namespace with setns(), which remaps <container_pid> (a pid as
+ *          seen INSIDE that namespace, e.g. the KWin-reported focused-app pid)
+ *          to the host pid numbering understood by the cgroup files. The
+ *          mount namespace is still the host's, so cgroup paths stay valid;
+ *          only /proc lookups for child processes must go through the
+ *          container's own procfs, /proc/<anchor>/root/proc/.
+ *
+ *          opt=on      move the process (settree=false: just it; settree=true:
+ *                      its whole process subtree, collected via the container
+ *                      procfs) into top-app.
+ *          opt=off     move it/them back to the root groups ("/").
+ *
+ *   libsettopapp.so <data_socket_inode> [stops=n1:n2:...]   (no "noset")
+ *       -> resolve the producer as above, then move its WHOLE session tree
+ *          into top-app and print the tree-root pid on stdout, so the
+ *          consumer can restore later without a second diag round-trip (the
+ *          producer may be gone by then).
+ *
+ *   libsettopapp.so <pid> restore
+ *       -> move the host tree rooted at <pid> back to "/".
  *
  * It is shipped inside the APK as lib*.so so Android extracts it into the app's
  * nativeLibraryDir with execute permission.
@@ -34,13 +58,14 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sched.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -119,11 +144,14 @@ static bool pid_seen(const pid_t *pids, int n, pid_t pid)
 }
 
 /* Depth-first walk of the process tree rooted at root, collecting every pid
- * (root included) exactly once. The tree is snapshotted before any cgroup
- * write: a child that dies or reparents mid-walk is skipped here but is not
- * left boosted either (its cgroup membership dies with it). Returns the
- * count, or -1 if the table overflowed. */
-static int collect_tree(pid_t root, pid_t *pids, int max_pids)
+ * (root included) exactly once. `proc_root` is the procfs prefix ("/proc" for
+ * host pids, "/proc/<anchor>/root/proc" once we setns()ed into the container's
+ * PID namespace, whose pid COLUMN of /proc is that namespace's while the
+ * mount namespace -- and with it the cgroup paths -- stays the host's). The
+ * tree is snapshotted before any cgroup write: a child that dies or reparents
+ * mid-walk is skipped here but is not left boosted either (its cgroup
+ * membership dies with it). Returns the count, or -1 if the table overflowed. */
+static int collect_tree(const char *proc_root, pid_t root, pid_t *pids, int max_pids)
 {
     int n = 0;
     int stack[MAX_PIDS];
@@ -141,8 +169,8 @@ static int collect_tree(pid_t root, pid_t *pids, int max_pids)
         /* children of every thread of cur; dedup against both the collected
          * table and the pending stack entries, else a grandchild gets pushed
          * twice and the second pop is (correctly, but wastefully) skipped */
-        char tpath[48];
-        snprintf(tpath, sizeof(tpath), "/proc/%d/task", (int)cur);
+        char tpath[160];
+        snprintf(tpath, sizeof(tpath), "%s/%d/task", proc_root, (int)cur);
         DIR *d = opendir(tpath);
         if (!d)
             continue;
@@ -150,9 +178,9 @@ static int collect_tree(pid_t root, pid_t *pids, int max_pids)
         while ((de = readdir(d))) {
             if (de->d_name[0] < '0' || de->d_name[0] > '9')
                 continue;
-            char cpath[128];
-            snprintf(cpath, sizeof(cpath), "/proc/%d/task/%s/children",
-                     (int)cur, de->d_name);
+            char cpath[256];
+            snprintf(cpath, sizeof(cpath), "%s/%d/task/%s/children",
+                     proc_root, (int)cur, de->d_name);
             FILE *f = fopen(cpath, "r");
             if (!f)
                 continue;
@@ -177,10 +205,10 @@ static int collect_tree(pid_t root, pid_t *pids, int max_pids)
 /* Read /proc/<pid>/stat and return the parent pid (field 4). The comm field
  * (2nd) is parenthesised and may contain spaces or parens itself, so locate
  * the LAST ')' first and parse after it. Returns 0 on failure. */
-static pid_t get_ppid(pid_t pid)
+static pid_t get_ppid(const char *proc_root, pid_t pid)
 {
-    char path[48];
-    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+    char path[160];
+    snprintf(path, sizeof(path), "%s/%d/stat", proc_root, (int)pid);
     FILE *f = fopen(path, "r");
     if (!f)
         return 0;
@@ -264,10 +292,10 @@ static const char *const *parse_stop_names(const char *spec)
 }
 
 /* True when `pid` itself carries one of the stop names (comm, 15 chars max). */
-static bool is_stop_name(pid_t pid)
+static bool is_stop_name(const char *proc_root, pid_t pid)
 {
-    char path[48];
-    snprintf(path, sizeof(path), "/proc/%d/comm", (int)pid);
+    char path[160];
+    snprintf(path, sizeof(path), "%s/%d/comm", proc_root, (int)pid);
     FILE *f = fopen(path, "r");
     if (!f)
         return false;
@@ -286,14 +314,17 @@ static bool is_stop_name(pid_t pid)
 /* Walk up from `pid` to the session's init process (init/systemd/zygote/su
  * or pid 1's direct child) and return THAT as the tree root, so the whole
  * desktop session -- compositor plus every app the session manager spawned
- * -- is one tree. Guards against loops (broken /proc) with a depth cap. */
-static pid_t find_tree_root(pid_t pid)
+ * -- is one tree. Guards against loops (broken /proc) with a depth cap.
+ * Runs on the HOST procfs: the resulting pid is a HOST pid even though the
+ * walk crosses into the container (a container init still has a host
+ * parent, e.g. the container runtime). */
+static pid_t find_tree_root(const char *proc_root, pid_t pid)
 {
     pid_t cur = pid;
     for (int depth = 0; depth < 32; depth++) {
-        if (is_stop_name(cur))
+        if (is_stop_name(proc_root, cur))
             return cur;
-        pid_t ppid = get_ppid(cur);
+        pid_t ppid = get_ppid(proc_root, cur);
         if (ppid <= 1)
             return cur;   /* orphaned / reparented: this is the best root */
         cur = ppid;
@@ -418,13 +449,18 @@ static pid_t holder_of_inode(unsigned long long inode)
 }
 
 /* Move every pid of the tree into the two top-app groups (or back to the root
- * groups when group paths are the "/" ones). Errors on individual pids are
- * logged and skipped (a process may have died between collect and write). */
-static int move_tree(pid_t root, const char *cpu_procs, const char *cpuset_procs,
+ * groups when group paths are the "/" ones). `proc_root` selects the procfs
+ * the tree is collected from (host /proc, or the container's
+ * /proc/<anchor>/root/proc after setns into the container's PID namespace);
+ * the pids it yields are already in the caller's current PID namespace, which
+ * is what the cgroup files expect. Errors on individual pids are logged and
+ * skipped (a process may have died between collect and write). */
+static int move_tree(const char *proc_root, pid_t root,
+                     const char *cpu_procs, const char *cpuset_procs,
                      const char *what)
 {
     pid_t pids[MAX_PIDS];
-    int n = collect_tree(root, pids, MAX_PIDS);
+    int n = collect_tree(proc_root, root, pids, MAX_PIDS);
     if (n <= 0) {
         LOGE("%s: collect_tree(%d) failed (%d)", what, (int)root, n);
         return -1;
@@ -450,19 +486,152 @@ static int move_tree(pid_t root, const char *cpu_procs, const char *cpuset_procs
     return moved > 0 ? 0 : -1;
 }
 
+/* Resolve the producer (holder of the peer of data socket `inode`) to its
+ * session-tree-root HOST pid. Returns 0 on failure. */
+static pid_t resolve_producer_anchor(unsigned long long inode)
+{
+    unsigned long long peer = peer_inode_of(inode);
+    if (!peer) {
+        LOGE("no peer socket found for inode %llu (diag unavailable?)", inode);
+        return 0;
+    }
+
+    pid_t producer = holder_of_inode(peer);
+    if (!producer) {
+        LOGE("no process holds peer socket inode %llu", peer);
+        return 0;
+    }
+
+    pid_t root = find_tree_root("/proc", producer);
+    LOGI("producer pid %d, tree root %d", (int)producer, (int)root);
+    return root;
+}
+
+/*
+ * "set" subcommand: O(1) foreground-scheduling switch for one container
+ * process (or its whole subtree with settree=true).
+ *
+ *   set <anchor_host_pid> <container_pid> opt=on|off [settree=true|false]
+ *
+ * The anchor is a process in the producer's PID namespace, discovered once at
+ * connect time via the UNIX_DIAG lookup (see the "noset" mode above); its
+ * /proc/<pid>/ns/pid is the namespace file we setns() into. After setns the
+ * calling thread translates container pids to host pids -- so the container
+ * pid the producer reported can be written straight into the host's cgroup
+ * files. The mount namespace is NOT entered: cgroup paths remain the host's.
+ * The container's OWN procfs (reachable at /proc/<anchor>/root/proc while the
+ * anchor lives) is the only procfs whose pid column is the container's, so
+ * the settree child scan runs against it.
+ */
+static int cmd_set(char **argv, int argc)
+{
+    if (argc < 5) {
+        LOGE("usage: %s set <anchor_host_pid> <container_pid> opt=on|off "
+             "[settree=true|false]", argv[0]);
+        return 1;
+    }
+
+    char *end = NULL;
+    errno = 0;
+    pid_t anchor = (pid_t)strtoll(argv[2], &end, 10);
+    if (errno != 0 || !end || *end != '\0' || anchor <= 0) {
+        LOGE("set: bad anchor pid '%s'", argv[2]);
+        return 1;
+    }
+    errno = 0;
+    end = NULL;
+    pid_t target = (pid_t)strtoll(argv[3], &end, 10);
+    if (errno != 0 || !end || *end != '\0' || target <= 0) {
+        LOGE("set: bad container pid '%s'", argv[3]);
+        return 1;
+    }
+
+    bool on;
+    if (strcmp(argv[4], "opt=on") == 0)
+        on = true;
+    else if (strcmp(argv[4], "opt=off") == 0)
+        on = false;
+    else {
+        LOGE("set: bad opt '%s' (want opt=on|off)", argv[4]);
+        return 1;
+    }
+
+    bool settree = false;
+    for (int i = 5; i < argc; i++) {
+        if (strcmp(argv[i], "settree=true") == 0)
+            settree = true;
+        else if (strcmp(argv[i], "settree=false") == 0)
+            settree = false;
+        else {
+            LOGE("set: unknown option '%s'", argv[i]);
+            return 1;
+        }
+    }
+
+    /* Enter the anchor's PID namespace. Only the calling thread's pid
+     * translations change; the mount namespace (and with it the cgroup paths
+     * and the anchor's /proc/<pid>/root link) stays the host's. */
+    char ns_path[64];
+    snprintf(ns_path, sizeof(ns_path), "/proc/%d/ns/pid", (int)anchor);
+    int ns_fd = open(ns_path, O_RDONLY | O_CLOEXEC);
+    if (ns_fd < 0) {
+        LOGE("set: cannot open %s: %s", ns_path, strerror(errno));
+        return 2;
+    }
+    if (setns(ns_fd, CLONE_NEWPID) < 0) {
+        LOGE("set: setns(%s) failed: %s", ns_path, strerror(errno));
+        close(ns_fd);
+        return 2;
+    }
+    close(ns_fd);
+
+    /* The anchor pins the container's root; its procfs is the one whose pid
+     * column matches our (now container) pid translations. If the anchor
+     * died, refuse rather than walk the host /proc with container pids. */
+    char proc_root[96];
+    snprintf(proc_root, sizeof(proc_root), "/proc/%d/root/proc", (int)anchor);
+    struct stat proc_stat;
+    if (settree && (stat(proc_root, &proc_stat) < 0 || !S_ISDIR(proc_stat.st_mode))) {
+        LOGE("set: container procfs %s unavailable (anchor gone?)", proc_root);
+        return 2;
+    }
+
+    const char *cpu_procs    = on ? "/dev/cpuctl/top-app/cgroup.procs" : "/dev/cpuctl/cgroup.procs";
+    const char *cpuset_procs = on ? "/dev/cpuset/top-app/cgroup.procs" : "/dev/cpuset/cgroup.procs";
+
+    if (settree)
+        return move_tree(proc_root, target, cpu_procs, cpuset_procs, "set-tree") < 0 ? 3 : 0;
+
+    if (write_cgroup_proc(cpu_procs, target) != 0
+        || write_cgroup_proc(cpuset_procs, target) != 0) {
+        LOGE("set: cgroup write failed for pid %d: %s", (int)target, strerror(errno));
+        return 3;
+    }
+    LOGI("set: pid %d %s", (int)target, on ? "promoted" : "restored");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
-        LOGE("usage: %s <data_socket_inode> [stops=name1:name2:...]", argv[0]);
+        LOGE("usage: %s <data_socket_inode> [stops=n1:n2:...] [noset]", argv[0]);
+        LOGE("       %s <data_socket_inode> [stops=...] (promote whole tree)", argv[0]);
         LOGE("       %s <pid> restore", argv[0]);
+        LOGE("       %s set <anchor_host_pid> <container_pid> opt=on|off [settree=...]", argv[0]);
         return 1;
     }
+
+    if (strcmp(argv[1], "set") == 0)
+        return cmd_set(argv, argc);
 
     /* Optional custom stop-name list ("stops=init:my_init:..."), replacing the
      * built-in one. Accepted in either mode; only the promote path consults
      * it. Parsed before anything else so failures here fail fast. */
+    bool noset = false;
     for (int i = 2; i < argc; i++) {
-        if (strncmp(argv[i], "stops=", 6) == 0) {
+        if (strcmp(argv[i], "noset") == 0) {
+            noset = true;
+        } else if (strncmp(argv[i], "stops=", 6) == 0) {
             const char *const *custom = parse_stop_names(argv[i] + 6);
             if (custom)
                 stop_names = custom;
@@ -479,7 +648,7 @@ int main(int argc, char **argv)
         }
         /* "/" (the root cgroup of each hierarchy) == the top of the mounted
          * controller: /dev/cpuctl/cgroup.procs and /dev/cpuset/cgroup.procs. */
-        int rc = move_tree(root, "/dev/cpuctl/cgroup.procs",
+        int rc = move_tree("/proc", root, "/dev/cpuctl/cgroup.procs",
                            "/dev/cpuset/cgroup.procs", "restore");
         if (rc < 0)
             return 2;
@@ -493,22 +662,18 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    unsigned long long peer = peer_inode_of(inode);
-    if (!peer) {
-        LOGE("no peer socket found for inode %llu (diag unavailable?)", inode);
-        return 3;
-    }
-
-    pid_t producer = holder_of_inode(peer);
-    if (!producer) {
-        LOGE("no process holds peer socket inode %llu", peer);
+    pid_t root = resolve_producer_anchor(inode);
+    if (!root)
         return 4;
+
+    if (noset) {
+        /* Anchor discovery only: hand the host pid back so the consumer can
+         * later "set ..." against it without a second diag round-trip. */
+        printf("%d\n", (int)root);
+        return 0;
     }
 
-    pid_t root = find_tree_root(producer);
-    LOGI("producer pid %d, tree root %d", (int)producer, (int)root);
-
-    if (move_tree(root, "/dev/cpuctl/top-app/cgroup.procs",
+    if (move_tree("/proc", root, "/dev/cpuctl/top-app/cgroup.procs",
                   "/dev/cpuset/top-app/cgroup.procs", "top-app") < 0)
         return 5;
 

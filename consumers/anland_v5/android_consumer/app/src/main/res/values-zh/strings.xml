@@ -108,9 +108,16 @@
     <string name="root_switch">使用 root 连接（辅助程序）</string>
     <string name="root_hint">启动一个 root 辅助程序（su）连接到套接字，并将连接传回应用。下次连接时生效（请重新打开应用）。</string>
     <string name="topapp_switch">启用前台调度（root）</string>
-    <string name="topapp_hint">Linux 桌面渲染期间，root 辅助程序将其整个进程树移入 top-app cgroup 以前台优先级调度；断开连接时移回。下次连接时生效。</string>
-    <string name="topapp_stops_label">前台调度：停止进程名</string>
-    <string name="topapp_stops_hint">例如 systemd:init，用":"分隔；留空使用内置列表</string>
+    <string name="topapp_hint">让 Linux 桌面获得 Android 前台 CPU 优先级。请在下方选择调度范围；下次连接时生效。</string>
+    <string name="topapp_mode_label">前台调度范围</string>
+    <string-array name="topapp_mode_options">
+        <item>1 - 当前焦点应用</item>
+        <item>2 - 整个桌面会话</item>
+    </string-array>
+    <string name="topapp_mode_focused_hint">模式 1：KWin 和当前活动应用的 scope 保持在 top-app。该 scope 中已有的进程及其子进程都会包含；焦点切换时恢复上一个应用。</string>
+    <string name="topapp_mode_whole_hint">模式 2：连接期间将整个 Anland 桌面进程树放入 top-app。后台应用和服务也会提升，功耗更高，但整个会话可获得最高调度优先级。</string>
+    <string name="topapp_stops_label">模式 2 的树根进程名（可选）</string>
+    <string name="topapp_stops_hint">例如 systemd:init（用“:”分隔）；留空使用内置列表</string>
     <string name="mic_switch">将麦克风转发到桌面</string>
     <string name="mic_hint">桌面音频始终通过本设备的扬声器播放。启用此项还会把麦克风反向发送到桌面。下次连接时生效（请重新打开应用）。</string>
     <string name="camera_switch">将摄像头转发到桌面</string>

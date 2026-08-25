@@ -33,15 +33,15 @@ public final class Native {
     // ---- instance API (delegates to the handle-taking natives) ----
 
     public void configure(String socketPath, boolean useRoot, String helperPath, String bridgePath) {
-        nativeConfigure(handle, socketPath, useRoot, helperPath, bridgePath, false, null, null);
+        nativeConfigure(handle, socketPath, useRoot, helperPath, bridgePath, false, null, 1, null);
     }
 
-    /** Full configure, including the foreground-scheduling (top-app) helper and
-     *  its optional ":"-separated stop-name list (empty/null = helper defaults). */
+    /** Full configure, including the foreground-scheduling (top-app) helper. */
     public void configure(String socketPath, boolean useRoot, String helperPath, String bridgePath,
-                          boolean topAppEnable, String topAppPath, String topAppStops) {
+                          boolean topAppEnable, String topAppPath, int topAppMode,
+                          String topAppStops) {
         nativeConfigure(handle, socketPath, useRoot, helperPath, bridgePath,
-                        topAppEnable, topAppPath, topAppStops);
+                        topAppEnable, topAppPath, topAppMode, topAppStops);
     }
     public void start(Surface surface, Object clipboardTarget, Object activityTarget) { nativeStart(handle, surface, clipboardTarget, activityTarget); }
     public void stop() { nativeStop(handle); }
@@ -70,7 +70,7 @@ public final class Native {
     private static native void nativeConfigure(long handle, String socketPath, boolean useRoot,
                                                String helperPath, String bridgePath,
                                                boolean topAppEnable, String topAppPath,
-                                               String topAppStops);
+                                               int topAppMode, String topAppStops);
 
     // With static natives there is no `thiz`, so native is handed the object it
     // calls back into (the Clipboard hosting nativeSetClipboardText /

@@ -966,18 +966,13 @@ public class SettingsActivity extends Activity {
         rootHint.setPadding(0, dp(4), 0, 0);
         root.addView(rootHint);
 
-        // Foreground scheduling (root): while the Linux desktop renders, move
-        // its whole process tree into Android's top-app cgroups (cpu/cpuset)
-        // via the bundled root helper; moved back to "/" on fallback or
-        // disconnect. Takes effect on next connect.
+        // Foreground scheduling (root). The selected scope mode is snapshotted
+        // on connect so an active helper always has one consistent restore path.
         Switch topappSwitch = new Switch(this);
         topappSwitch.setText(R.string.topapp_switch);
         topappSwitch.setTextSize(14);
         topappSwitch.setPadding(0, dp(16), 0, 0);
         topappSwitch.setChecked(prefs.getBoolean(MainActivity.KEY_TOPAPP, false));
-        topappSwitch.setOnCheckedChangeListener((v, checked) ->
-            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                .putBoolean(MainActivity.KEY_TOPAPP, checked).apply());
         root.addView(topappSwitch);
 
         TextView topappHint = new TextView(this);
@@ -987,16 +982,30 @@ public class SettingsActivity extends Activity {
         topappHint.setPadding(0, dp(4), 0, 0);
         root.addView(topappHint);
 
-        // Custom stop names for the tree walk: ":"-separated process names that
-        // mark the top of the desktop session (the helper walks up from the
-        // producer and uses the first ancestor carrying one of these names as
-        // the tree root). Empty = the helper's built-in list (init, systemd,
-        // zygote, su, ...). A custom list REPLACES the default.
+        TextView topappModeLabel = new TextView(this);
+        topappModeLabel.setText(R.string.topapp_mode_label);
+        topappModeLabel.setTextSize(14);
+        topappModeLabel.setPadding(0, dp(12), 0, dp(4));
+        root.addView(topappModeLabel);
+
+        Spinner topappModeSpinner = new Spinner(this);
+        topappModeSpinner.setAdapter(new ArrayAdapter<>(this,
+            android.R.layout.simple_spinner_dropdown_item,
+            getResources().getStringArray(R.array.topapp_mode_options)));
+        int savedTopappMode = prefs.getInt(MainActivity.KEY_TOPAPP_MODE, 1);
+        topappModeSpinner.setSelection(savedTopappMode == 2 ? 1 : 0);
+        root.addView(topappModeSpinner);
+
+        TextView topappModeHint = new TextView(this);
+        topappModeHint.setTextSize(12);
+        topappModeHint.setTextColor(Color.GRAY);
+        topappModeHint.setPadding(0, dp(4), 0, dp(4));
+        root.addView(topappModeHint);
+
         TextView topappStopsLabel = new TextView(this);
         topappStopsLabel.setText(R.string.topapp_stops_label);
         topappStopsLabel.setTextSize(14);
-        topappStopsLabel.setTextColor(Color.GRAY);
-        topappStopsLabel.setPadding(0, dp(12), 0, dp(4));
+        topappStopsLabel.setPadding(0, dp(8), 0, dp(4));
         root.addView(topappStopsLabel);
 
         EditText topappStopsInput = new EditText(this);
@@ -1012,6 +1021,37 @@ public class SettingsActivity extends Activity {
             }
         });
         root.addView(topappStopsInput);
+
+        Runnable updateTopappControls = () -> {
+            boolean enabled = topappSwitch.isChecked();
+            boolean wholeSession = topappModeSpinner.getSelectedItemPosition() == 1;
+            topappModeLabel.setEnabled(enabled);
+            topappModeSpinner.setEnabled(enabled);
+            topappModeHint.setEnabled(enabled);
+            topappModeHint.setText(wholeSession
+                    ? R.string.topapp_mode_whole_hint
+                    : R.string.topapp_mode_focused_hint);
+            topappStopsLabel.setVisibility(wholeSession ? View.VISIBLE : View.GONE);
+            topappStopsInput.setVisibility(wholeSession ? View.VISIBLE : View.GONE);
+            topappStopsLabel.setEnabled(enabled);
+            topappStopsInput.setEnabled(enabled);
+        };
+
+        topappSwitch.setOnCheckedChangeListener((v, checked) -> {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putBoolean(MainActivity.KEY_TOPAPP, checked).apply();
+            updateTopappControls.run();
+        });
+        topappModeSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View v, int pos, long id) {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putInt(MainActivity.KEY_TOPAPP_MODE, pos + 1).apply();
+                updateTopappControls.run();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+        updateTopappControls.run();
 
         // Forward microphone: capture the device mic and expose it to the Linux
         // desktop as a recording source. Requires the RECORD_AUDIO permission, which

@@ -97,13 +97,11 @@ set_target_properties(inputgrab PROPERTIES
 
 target_link_libraries(inputgrab log)
 
-# Root helper for "foreground scheduling": when the producer (Linux desktop)
-# takes over the display, move its whole process tree into the Android top-app
-# cgroups (cpu + cpuset) so it renders with foreground priority, and back out
-# on fallback/disconnect. The producer's pid is discovered as root via
-# NETLINK_INET_DIAG (UNIX_DIAG peer of the consumer's data socket inode) --
-# SO_PEERCRED on the consumer's socketpairs only reports the creator (the
-# consumer itself), since the fds reached the producer by SCM_RIGHTS relay.
+# Persistent root helper for foreground scheduling. It resolves the producer
+# with UNIX_DIAG, then either tracks KWin plus the active application's systemd
+# scope subtree and descendants or promotes the whole desktop session tree. It
+# restores every promoted process on focus changes (mode 1), fallback, EOF, or
+# shutdown.
 # Same lib*.so packaging trick so it lands in nativeLibraryDir executable.
 add_executable(settopapp
     settopapp.c
@@ -115,4 +113,5 @@ set_target_properties(settopapp PROPERTIES
     SUFFIX ".so"
 )
 
+target_compile_options(settopapp PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(settopapp log)

@@ -108,9 +108,16 @@
     <string name="root_switch">루트로 연결 (헬퍼)</string>
     <string name="root_hint">소켓에 연결하여 연결을 앱으로 전달하는 루트 헬퍼(su)를 실행합니다. 다음 연결 시(앱을 다시 열 때) 적용됩니다.</string>
     <string name="topapp_switch">포그라운드 스케줄링 사용 (root)</string>
-    <string name="topapp_hint">Linux 데스크톱이 렌더링하는 동안 루트 헬퍼가 전체 프로세스 트리를 top-app cgroup으로 옮겨 포그라운드 우선 순위로 스케줄합니다. 연결 해제 시 원복됩니다. 다음 연결 시 적용됩니다.</string>
-    <string name="topapp_stops_label">포그라운드 스케줄링: 정지 프로세스 이름</string>
-    <string name="topapp_stops_hint">예: systemd:init (":"로 구분); 비워두면 내장 목록 사용</string>
+    <string name="topapp_hint">Linux 데스크톱에 Android 포그라운드 CPU 우선순위를 부여합니다. 아래에서 범위를 선택하며 다음 연결부터 적용됩니다.</string>
+    <string name="topapp_mode_label">포그라운드 스케줄링 범위</string>
+    <string-array name="topapp_mode_options">
+        <item>1 - 포커스된 앱</item>
+        <item>2 - 전체 데스크톱 세션</item>
+    </string-array>
+    <string name="topapp_mode_focused_hint">모드 1: KWin과 활성 앱 scope를 top-app에 유지합니다. 해당 scope의 기존 프로세스와 자식 프로세스가 포함되며 포커스가 바뀌면 이전 앱을 복원합니다.</string>
+    <string name="topapp_mode_whole_hint">모드 2: 연결이 끝날 때까지 전체 Anland 데스크톱 프로세스 트리를 top-app으로 이동합니다. 백그라운드 앱과 서비스도 향상되어 전력 사용은 늘지만 세션 우선순위는 최대가 됩니다.</string>
+    <string name="topapp_stops_label">모드 2 트리 루트 프로세스 이름 (선택 사항)</string>
+    <string name="topapp_stops_hint">예: systemd:init (":"로 구분); 비워두면 기본 목록 사용</string>
     <string name="mic_switch">마이크를 데스크톱으로 전달</string>
     <string name="mic_hint">데스크톱 오디오는 항상 이 기기의 스피커로 재생됩니다. 이 옵션을 켜면 마이크도 반대 방향으로 전송됩니다. 다음 연결 시(앱을 다시 열 때) 적용됩니다.</string>
     <string name="camera_switch">카메라를 데스크톱으로 전달</string>
