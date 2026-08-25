@@ -784,7 +784,8 @@ static int cmd_set(char **argv, int argc)
     raw_syscall1(__NR_close, fd_cpuset);
     if ((status & 0x7f) != 0)
         RAW_EXIT(3);
-    RAW_EXIT((int)(((unsigned)status >> 8) & 0xff));
+    for (;;)
+        RAW_EXIT((int)(((unsigned)status >> 8) & 0xff));
 }
 
 int main(int argc, char **argv)
