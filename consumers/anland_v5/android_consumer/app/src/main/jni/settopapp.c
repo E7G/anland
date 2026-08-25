@@ -70,6 +70,12 @@
 #include <unistd.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+#include <sys/mount.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <linux/filter.h>
+#include <linux/audit.h>
+#include <linux/seccomp.h>
 /* The NDK sysroot ships only a subset of the kernel UAPI headers and lacks
  * socket_diag.h (and, on some releases, unix_diag.h). Both are trivial stable
  * UAPI definitions, so fall back to inline copies when they are missing. */
@@ -509,6 +515,106 @@ static pid_t resolve_producer_anchor(unsigned long long inode)
 }
 
 /*
+ * Raw syscalls (inline asm, no libc): once the seccomp filter below is up,
+ * the worker must not execute any bionic code -- no wrappers, no errno, no
+ * stdio, no logging. Everything it writes is pre-formatted by the parent,
+ * so its entire life is: write() the ready-made "pid\n" lines to the
+ * pre-opened cgroup fds, then exit_group(). The parent's own post-filter
+ * syscalls (clone / wait4 / close / exit) are raw too, so the allowlist
+ * stays minimal: write, clone, wait4, close, exit, exit_group.
+ * The build is arm64-v8a only (and this dev box is aarch64 itself).
+ */
+static long raw_syscall1(long nr, long a)
+{
+    register long x8 __asm__("x8") = nr;
+    register long x0 __asm__("x0") = a;
+    __asm__ __volatile__("svc 0" : "+r"(x0) : "r"(x8) : "memory", "cc");
+    return x0;
+}
+static long raw_syscall3(long nr, long a, long b, long c)
+{
+    register long x8 __asm__("x8") = nr;
+    register long x0 __asm__("x0") = a;
+    register long x1 __asm__("x1") = b;
+    register long x2 __asm__("x2") = c;
+    __asm__ __volatile__("svc 0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory", "cc");
+    return x0;
+}
+static long raw_syscall5(long nr, long a, long b, long c, long d, long e)
+{
+    register long x8 __asm__("x8") = nr;
+    register long x0 __asm__("x0") = a;
+    register long x1 __asm__("x1") = b;
+    register long x2 __asm__("x2") = c;
+    register long x3 __asm__("x3") = d;
+    register long x4 __asm__("x4") = e;
+    __asm__ __volatile__("svc 0" : "+r"(x0)
+                 : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4)
+                 : "memory", "cc");
+    return x0;
+}
+
+/* Plain fork() semantics via clone(SIGCHLD, ...): child_stack NULL keeps the
+ * COW-stack fork behaviour, and no CLONE_CHILD_* flags means the tid/tls
+ * pointer arguments are never dereferenced. */
+#define RAW_FORK() \
+    raw_syscall5(__NR_clone, SIGCHLD, 0, 0, 0, 0)
+#define RAW_WRITE(fd, buf, len) \
+    raw_syscall3(__NR_write, (long)(fd), (long)(buf), (long)(len))
+#define RAW_EXIT(code) \
+    raw_syscall1(__NR_exit_group, (long)(code))
+
+/*
+ * Sandbox installed by the PARENT right before the raw fork(): the forked
+ * worker is visible inside the container's PID namespace and runs as host
+ * root, so a hostile container process could ptrace it or SIGSTOP it.
+ * Everything the worker needs is prepared beforehand -- cgroup fds
+ * pre-opened, pid list pre-collected (the container procfs pid column is
+ * plain text, so the numbers the parent reads are the worker's
+ * container-numbered pids), every write payload pre-formatted. seccomp
+ * filters and the mount namespace are inherited across fork(), so
+ * installing them pre-fork leaves no unfiltered window: the worker is born
+ * with an empty read-only / and nothing but write() left, running zero
+ * bionic code. No logging after this returns -- logd is not allowed.
+ */
+#define ALLOW_NR(nr)                                                    \
+    { BPF_JMP | BPF_JEQ | BPF_K, 0, 1, (nr) },                          \
+    { BPF_RET | BPF_K, 0, 0, SECCOMP_RET_ALLOW }
+
+static int sandbox_before_fork(void)
+{
+    if (unshare(CLONE_NEWNS) < 0)
+        return -1;
+    if (mount(NULL, "/", NULL, MS_SLAVE | MS_REC, NULL) < 0)
+        return -1;
+    if (mount("tmpfs", "/", "tmpfs", MS_RDONLY, "size=4k,mode=0") < 0)
+        return -1;
+
+    prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0)
+        return -1;
+
+    struct sock_filter filter[] = {
+        { BPF_LD | BPF_W | BPF_ABS, 0, 0, offsetof(struct seccomp_data, arch) },
+        { BPF_JMP | BPF_JEQ | BPF_K, 1, 0, AUDIT_ARCH_AARCH64 },
+        { BPF_RET | BPF_K, 0, 0, SECCOMP_RET_KILL },
+        { BPF_LD | BPF_W | BPF_ABS, 0, 0, offsetof(struct seccomp_data, nr) },
+        ALLOW_NR(__NR_write),   /* worker: cgroup fds */
+        ALLOW_NR(__NR_clone),   /* parent: fork the worker */
+        ALLOW_NR(__NR_wait4),   /* parent: reap the worker */
+        ALLOW_NR(__NR_close),   /* parent: drop the fds */
+        ALLOW_NR(__NR_exit),    /* parent: return from main */
+        ALLOW_NR(__NR_exit_group),
+        { BPF_RET | BPF_K, 0, 0, SECCOMP_RET_KILL },
+    };
+    struct sock_fprog prog = {
+        .len = (unsigned short)(sizeof(filter) / sizeof(filter[0])),
+        .filter = filter,
+    };
+    return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0);
+}
+
+/*
  * "set" subcommand: O(1) foreground-scheduling switch for one container
  * process (or its whole subtree with settree=true).
  *
@@ -522,7 +628,7 @@ static pid_t resolve_producer_anchor(unsigned long long inode)
  * files. The mount namespace is NOT entered: cgroup paths remain the host's.
  * The container's OWN procfs (reachable at /proc/<anchor>/root/proc while the
  * anchor lives) is the only procfs whose pid column is the container's, so
- * the settree child scan runs against it.
+ * the settree scan runs against it -- in the parent, before the sandbox.
  */
 static int cmd_set(char **argv, int argc)
 {
@@ -591,43 +697,94 @@ static int cmd_set(char **argv, int argc)
     close(ns_fd);
 
     /* The anchor pins the container's root; its procfs is the one whose pid
-     * column matches the child's (container) pid translations. If the anchor
-     * died, refuse rather than walk the host /proc with container pids. */
-    char proc_root[96];
-    snprintf(proc_root, sizeof(proc_root), "/proc/%d/root/proc", (int)anchor);
-    struct stat proc_stat;
-    if (settree && (stat(proc_root, &proc_stat) < 0 || !S_ISDIR(proc_stat.st_mode))) {
-        LOGE("set: container procfs %s unavailable (anchor gone?)", proc_root);
-        return 2;
-    }
-
-    const pid_t worker = fork();
-    if (worker < 0) {
-        LOGE("set: fork failed: %s", strerror(errno));
-        return 2;
-    }
-    if (worker == 0) {
-        /* Child: registered in the container's PID namespace, so pid lookups
-         * and cgroup writes below use container numbering. */
-        const char *cpu_procs    = on ? "/dev/cpuctl/top-app/cgroup.procs" : "/dev/cpuctl/cgroup.procs";
-        const char *cpuset_procs = on ? "/dev/cpuset/top-app/cgroup.procs" : "/dev/cpuset/cgroup.procs";
-
-        if (settree)
-            _exit(move_tree(proc_root, target, cpu_procs, cpuset_procs, "set-tree") < 0 ? 3 : 0);
-
-        if (write_cgroup_proc(cpu_procs, target) != 0
-            || write_cgroup_proc(cpuset_procs, target) != 0) {
-            LOGE("set: cgroup write failed for pid %d: %s", (int)target, strerror(errno));
-            _exit(3);
+     * column matches the worker's (container) pid translations. The parent
+     * collects the subtree here, BEFORE the sandbox: the pid column is plain
+     * text, so the numbers it reads are already the container-numbered pids
+     * the worker will resolve. If the anchor died, refuse rather than walk
+     * the host /proc with container pids. */
+    pid_t pids[MAX_PIDS];
+    int n_pids = 1;
+    pids[0] = target;
+    if (settree) {
+        char proc_root[96];
+        snprintf(proc_root, sizeof(proc_root), "/proc/%d/root/proc", (int)anchor);
+        struct stat proc_stat;
+        if (stat(proc_root, &proc_stat) < 0 || !S_ISDIR(proc_stat.st_mode)) {
+            LOGE("set: container procfs %s unavailable (anchor gone?)", proc_root);
+            return 2;
         }
-        LOGI("set: pid %d %s", (int)target, on ? "promoted" : "restored");
-        _exit(0);
+        n_pids = collect_tree(proc_root, target, pids, MAX_PIDS);
+        if (n_pids <= 0) {
+            LOGE("set: collect_tree(%d) failed (%d)", (int)target, n_pids);
+            return 2;
+        }
+        LOGI("set-tree: %d processes from root %d", n_pids, (int)target);
     }
 
-    int status = 0;
-    while (waitpid(worker, &status, 0) < 0 && errno == EINTR) {
+    /* Pre-open the destination cgroup files and pre-format every write:
+     * after the sandbox goes up neither parent nor worker resolves a path
+     * or formats a string ever again. */
+    const char *cpu_procs    = on ? "/dev/cpuctl/top-app/cgroup.procs" : "/dev/cpuctl/cgroup.procs";
+    const char *cpuset_procs = on ? "/dev/cpuset/top-app/cgroup.procs" : "/dev/cpuset/cgroup.procs";
+    int fd_cpu = open(cpu_procs, O_WRONLY | O_APPEND | O_CLOEXEC);
+    int fd_cpuset = open(cpuset_procs, O_WRONLY | O_APPEND | O_CLOEXEC);
+    if (fd_cpu < 0 || fd_cpuset < 0) {
+        LOGE("set: cannot open cgroup files (%s, %s): %s",
+             cpu_procs, cpuset_procs, strerror(errno));
+        if (fd_cpu >= 0) close(fd_cpu);
+        if (fd_cpuset >= 0) close(fd_cpuset);
+        return 2;
     }
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 3;
+
+    /* Pre-formatted writes AND their lengths: the worker must not call any
+     * bionic code, strlen() included. */
+    static char lines[MAX_PIDS][16];
+    static long line_len[MAX_PIDS];
+    for (int i = 0; i < n_pids; i++) {
+        int len = snprintf(lines[i], sizeof(lines[i]), "%d\n", (int)pids[i]);
+        line_len[i] = len > 0 ? len : 0;
+    }
+
+    /* Sandbox LAST: from here on -- raw syscalls only, no bionic, no logs.
+     * The worker is born masked, filtered, and with everything it needs
+     * already open and formatted. Failures past this point exit raw too:
+     * returning through libc would run bionic's atexit cleanup under the
+     * filter and die of SIGSYS after all. */
+    if (sandbox_before_fork() < 0)
+        RAW_EXIT(2);
+
+    long worker = RAW_FORK();
+    if (worker < 0)
+        RAW_EXIT(2);
+    if (worker == 0) {
+        /* Worker: registered in the container's PID namespace, so the
+         * pre-formatted pid lines resolve to the processes the producer
+         * meant. Raw write()s to the two pre-opened fds, then raw exit. */
+        long ok = 0;
+        for (int i = 0; i < n_pids; i++) {
+            if (RAW_WRITE(fd_cpu, lines[i], line_len[i]) == line_len[i])
+                ok++;
+            if (RAW_WRITE(fd_cpuset, lines[i], line_len[i]) == line_len[i])
+                ok++;
+        }
+        /* raw exit_group never returns; the loop below is unreachable, but
+         * keeps the compiler from believing control falls out of the if */
+        for (;;)
+            RAW_EXIT(ok > 0 ? 0 : 3);
+    }
+
+    /* Parent: reaps the worker and passes its exit code through, raw.
+     * A signalled worker (SIGSYS = it hit the filter; SIGSTOP-hostile
+     * tampering would leave wait4 hanging, the consumer's su timeout
+     * reaps the helper then) reports failure, not a bogus 0. */
+    long status = 0;
+    while (raw_syscall5(__NR_wait4, worker, (long)&status, 0, 0, 0) == -EINTR) {
+    }
+    raw_syscall1(__NR_close, fd_cpu);
+    raw_syscall1(__NR_close, fd_cpuset);
+    if ((status & 0x7f) != 0)
+        RAW_EXIT(3);
+    RAW_EXIT((int)(((unsigned)status >> 8) & 0xff));
 }
 
 int main(int argc, char **argv)
