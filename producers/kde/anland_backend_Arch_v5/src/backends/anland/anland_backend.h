@@ -16,7 +16,9 @@
 #include <QByteArray>
 #include <QPointF>
 #include <QVector>
+#include <cstdint>
 #include <memory>
+#include <sys/types.h>
 
 extern "C" {
 #include "display_producer.h"
@@ -115,6 +117,13 @@ private:
     void sendClipboardToKWin(const QByteArray &text);
     void sendTextInputToKWin(const QByteArray &text);
 
+    // Foreground scheduling: the compositor subtree is boosted once per
+    // connection; focus changes restore the previous client before boosting
+    // the next one with a self-contained event.
+    void setupSchedulingTracking();
+    void updateActiveScheduling(bool force = false);
+    void sendSchedulingEvent(pid_t pid, uint8_t flags);
+
     static void fallbackTrampoline(void *data);
 
     QString m_socketPath;
@@ -132,6 +141,8 @@ private:
     bool m_inFallback = false;
     QByteArray m_clipboardText;
     std::unique_ptr<AbstractDataSource> m_clipboardSource;
+
+    pid_t m_activeSchedulingPid = -1;
 };
 
 } // namespace KWin

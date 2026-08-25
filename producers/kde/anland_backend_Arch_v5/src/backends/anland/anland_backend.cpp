@@ -29,6 +29,8 @@
 #include "wayland/display.h"
 #include "wayland/seat.h"
 #include "wayland_server.h"
+#include "window.h"
+#include "workspace.h"
 
 #include <QMimeData>
 #include <QScopeGuard>
@@ -206,6 +208,13 @@ bool AnlandBackend::initialize()
         connect(seat, &SeatInterface::selectionChanged, this, [this](AbstractDataSource *) {
             onClipboardChanged();
         });
+    }
+
+    // Workspace is created after backend initialization on KWin 6.7.
+    if (workspace()) {
+        setupSchedulingTracking();
+    } else {
+        connect(kwinApp(), &Application::workspaceCreated, this, &AnlandBackend::setupSchedulingTracking);
     }
 
     return true;
@@ -583,6 +592,68 @@ void AnlandBackend::onReconnectTimer()
     if (layer) {
         layer->addDeviceRepaint(Region::infinite());
     }
+
+    // Re-assert the compositor's permanent subtree boost, then the focused
+    // client's (the consumer regresses every boost on its own fallback).
+    sendSchedulingEvent(getpid(), SCHEDULING_FLAG_SETTREE | SCHEDULING_FLAG_ON);
+    updateActiveScheduling(true);
+}
+
+// ---------------------------------------------------------------------------
+// Foreground scheduling: compositor + focused client
+// ---------------------------------------------------------------------------
+
+void AnlandBackend::setupSchedulingTracking()
+{
+    if (auto *ws = workspace()) {
+        connect(ws, &Workspace::windowActivated, this, [this]() {
+            updateActiveScheduling();
+        });
+        if (!m_inFallback) {
+            sendSchedulingEvent(getpid(), SCHEDULING_FLAG_SETTREE | SCHEDULING_FLAG_ON);
+        }
+        updateActiveScheduling(true);
+    }
+}
+
+void AnlandBackend::updateActiveScheduling(bool force)
+{
+    pid_t pid = 0;
+    if (auto *ws = workspace()) {
+        if (Window *window = ws->activeWindow()) {
+            pid = window->pid();
+        }
+    }
+
+    if (!force && pid == m_activeSchedulingPid) {
+        return;
+    }
+    // The off carries SETTREE too: promotion moved the whole subtree in, so
+    // restoration must move the whole subtree back out, including children
+    // forked while the client was focused.
+    if (m_activeSchedulingPid > 0) {
+        sendSchedulingEvent(m_activeSchedulingPid, SCHEDULING_FLAG_SETTREE);
+    }
+    m_activeSchedulingPid = pid;
+    if (pid > 0) {
+        sendSchedulingEvent(pid, SCHEDULING_FLAG_SETTREE | SCHEDULING_FLAG_ON);
+    }
+}
+
+void AnlandBackend::sendSchedulingEvent(pid_t pid, uint8_t flags)
+{
+    if (m_inFallback) {
+        return;
+    }
+
+    const OutputEvent ev = {
+        .type = OUTPUT_TYPE_SCHEDULING,
+        .scheduling = {
+            .pid = pid > 0 ? pid : 0,
+            .flags = flags,
+        },
+    };
+    push_output_event(m_display, &ev);
 }
 
 static QByteArray readDataFromFd(FileDescriptor fd)

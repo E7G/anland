@@ -2,6 +2,7 @@
 #define DISPLAY_PROTOCOL_H
 
 #include <stdint.h>
+#include <sys/types.h>
 
 #define CTRL_MSG_CONSUMER_HELLO  1
 #define CTRL_MSG_PRODUCER_HELLO  2
@@ -136,6 +137,10 @@ struct OutputEvent {
             uint32_t args[3]; // support 3 args
         } resources_request;
         struct {
+            pid_t pid;      // PID as seen in the producer's PID namespace
+            uint8_t flags;  // SCHEDULING_FLAG_*
+        } scheduling;
+        struct {
             uint32_t padding[4];
         };
     };
@@ -143,6 +148,15 @@ struct OutputEvent {
 
 #define OUTPUT_TYPE_CLIPBOARD 1
 #define OUTPUT_TYPE_RESOURCES_REQUEST 2
+/* Producer -> consumer: foreground-scheduling switch. The producer reports
+ * the currently focused subtree after every reconnect and on each activation
+ * change: {previous pid, off} before {new pid, on}, so each event is
+ * self-contained. */
+#define OUTPUT_TYPE_SCHEDULING 4
+
+/* scheduling.flags */
+#define SCHEDULING_FLAG_SETTREE 0x01 /* operate on pid's whole process subtree */
+#define SCHEDULING_FLAG_ON      0x02 /* 1 = move into top-app, 0 = restore */
 
 /*
  * Audio runs on its own dedicated bidirectional socketpair (hello fd slot 4),
