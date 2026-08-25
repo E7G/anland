@@ -66,6 +66,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -568,9 +569,13 @@ static int cmd_set(char **argv, int argc)
         }
     }
 
-    /* Enter the anchor's PID namespace. Only the calling thread's pid
-     * translations change; the mount namespace (and with it the cgroup paths
-     * and the anchor's /proc/<pid>/root link) stays the host's. */
+    /* Enter the anchor's PID namespace. setns(CLONE_NEWPID) does NOT change
+     * the calling thread's own pid translations -- only children forked
+     * afterwards are registered in the new namespace. So the actual cgroup
+     * work happens in a fork()ed child, which resolves <container_pid> to
+     * the process the producer meant. The mount namespace (and with it the
+     * cgroup paths and the anchor's /proc/<pid>/root link) stays the
+     * host's. */
     char ns_path[64];
     snprintf(ns_path, sizeof(ns_path), "/proc/%d/ns/pid", (int)anchor);
     int ns_fd = open(ns_path, O_RDONLY | O_CLOEXEC);
@@ -586,7 +591,7 @@ static int cmd_set(char **argv, int argc)
     close(ns_fd);
 
     /* The anchor pins the container's root; its procfs is the one whose pid
-     * column matches our (now container) pid translations. If the anchor
+     * column matches the child's (container) pid translations. If the anchor
      * died, refuse rather than walk the host /proc with container pids. */
     char proc_root[96];
     snprintf(proc_root, sizeof(proc_root), "/proc/%d/root/proc", (int)anchor);
@@ -596,19 +601,33 @@ static int cmd_set(char **argv, int argc)
         return 2;
     }
 
-    const char *cpu_procs    = on ? "/dev/cpuctl/top-app/cgroup.procs" : "/dev/cpuctl/cgroup.procs";
-    const char *cpuset_procs = on ? "/dev/cpuset/top-app/cgroup.procs" : "/dev/cpuset/cgroup.procs";
-
-    if (settree)
-        return move_tree(proc_root, target, cpu_procs, cpuset_procs, "set-tree") < 0 ? 3 : 0;
-
-    if (write_cgroup_proc(cpu_procs, target) != 0
-        || write_cgroup_proc(cpuset_procs, target) != 0) {
-        LOGE("set: cgroup write failed for pid %d: %s", (int)target, strerror(errno));
-        return 3;
+    const pid_t worker = fork();
+    if (worker < 0) {
+        LOGE("set: fork failed: %s", strerror(errno));
+        return 2;
     }
-    LOGI("set: pid %d %s", (int)target, on ? "promoted" : "restored");
-    return 0;
+    if (worker == 0) {
+        /* Child: registered in the container's PID namespace, so pid lookups
+         * and cgroup writes below use container numbering. */
+        const char *cpu_procs    = on ? "/dev/cpuctl/top-app/cgroup.procs" : "/dev/cpuctl/cgroup.procs";
+        const char *cpuset_procs = on ? "/dev/cpuset/top-app/cgroup.procs" : "/dev/cpuset/cgroup.procs";
+
+        if (settree)
+            _exit(move_tree(proc_root, target, cpu_procs, cpuset_procs, "set-tree") < 0 ? 3 : 0);
+
+        if (write_cgroup_proc(cpu_procs, target) != 0
+            || write_cgroup_proc(cpuset_procs, target) != 0) {
+            LOGE("set: cgroup write failed for pid %d: %s", (int)target, strerror(errno));
+            _exit(3);
+        }
+        LOGI("set: pid %d %s", (int)target, on ? "promoted" : "restored");
+        _exit(0);
+    }
+
+    int status = 0;
+    while (waitpid(worker, &status, 0) < 0 && errno == EINTR) {
+    }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 3;
 }
 
 int main(int argc, char **argv)
