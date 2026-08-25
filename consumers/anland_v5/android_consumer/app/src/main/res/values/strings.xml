@@ -116,7 +116,7 @@
     </string-array>
     <string name="topapp_mode_focused_hint">Mode 1: Keeps KWin and the active application scope in top-app. Existing processes in that scope and child processes are included; the previous application is restored when focus changes.</string>
     <string name="topapp_mode_whole_hint">Mode 2: Moves the whole Anland desktop process tree into top-app until disconnect. Background applications and services are also boosted, using more power but giving the session maximum priority.</string>
-    <string name="topapp_stops_label">Mode 2 tree-root process names (optional)</string>
+    <string name="topapp_stops_label">Scan stop process names (optional)</string>
     <string name="topapp_stops_hint">e.g. systemd:init (":"-separated); empty uses built-in defaults</string>
     <string name="mic_switch">Forward microphone to desktop</string>
     <string name="mic_hint">Desktop audio always plays through this device\'s speaker. Enabling this also sends the mic the other way. Takes effect on next connect (reopen the app).</string>

@@ -116,7 +116,7 @@
     </string-array>
     <string name="topapp_mode_focused_hint">모드 1: KWin과 활성 앱 scope를 top-app에 유지합니다. 해당 scope의 기존 프로세스와 자식 프로세스가 포함되며 포커스가 바뀌면 이전 앱을 복원합니다.</string>
     <string name="topapp_mode_whole_hint">모드 2: 연결이 끝날 때까지 전체 Anland 데스크톱 프로세스 트리를 top-app으로 이동합니다. 백그라운드 앱과 서비스도 향상되어 전력 사용은 늘지만 세션 우선순위는 최대가 됩니다.</string>
-    <string name="topapp_stops_label">모드 2 트리 루트 프로세스 이름 (선택 사항)</string>
+    <string name="topapp_stops_label">스캔 정지 프로세스 이름 (선택 사항)</string>
     <string name="topapp_stops_hint">예: systemd:init (":"로 구분); 비워두면 기본 목록 사용</string>
     <string name="mic_switch">마이크를 데스크톱으로 전달</string>
     <string name="mic_hint">데스크톱 오디오는 항상 이 기기의 스피커로 재생됩니다. 이 옵션을 켜면 마이크도 반대 방향으로 전송됩니다. 다음 연결 시(앱을 다시 열 때) 적용됩니다.</string>

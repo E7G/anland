@@ -568,10 +568,15 @@ static pid_t topapp_discover_root(struct consumer_state *s, int data_fd,
     }
 
     /* The inode identifies our end of the data socketpair; the helper resolves
-     * it to the peer the producer holds. */
+     * it to the peer the producer holds. The optional stop-name list bounds
+     * the upward PPID scan in both modes: mode 2 uses the scanned root as the
+     * promote tree root, mode 1 as the namespace anchor (and restore root). */
     char cmd[sizeof(s->topapp_run_path) + sizeof(s->topapp_run_stops) + 32];
-    if (promote && s->topapp_run_stops[0] != '\0')
+    if (s->topapp_run_stops[0] != '\0' && promote)
         snprintf(cmd, sizeof(cmd), "%s %llu stops=%s", s->topapp_run_path,
+                 (unsigned long long)st.st_ino, s->topapp_run_stops);
+    else if (s->topapp_run_stops[0] != '\0')
+        snprintf(cmd, sizeof(cmd), "%s %llu stops=%s noset", s->topapp_run_path,
                  (unsigned long long)st.st_ino, s->topapp_run_stops);
     else if (promote)
         snprintf(cmd, sizeof(cmd), "%s %llu", s->topapp_run_path,
@@ -634,8 +639,13 @@ static void topapp_restore_tree(struct consumer_state *s)
 static void topapp_handle_scheduling_event(struct consumer_state *s,
                                            const struct OutputEvent *event)
 {
-    if (s->topapp_run_mode != 1)
-        return;   /* mode 2 promotes the whole tree; per-pid reports ignored */
+    /* Only mode 1 consumes per-pid reports (mode 2 promoted the whole tree
+     * once at exit-fallback), and only when the feature is enabled for this
+     * connection -- with foreground scheduling off the producer may still
+     * send events (it cannot know the Android-side setting), and they must
+     * not spawn su invocations. */
+    if (s->topapp_run_mode != 1 || !s->topapp_run_enable)
+        return;
 
     pthread_mutex_lock(&s->topapp_lock);
     const bool have_anchor = s->topapp_root_pid > 0;

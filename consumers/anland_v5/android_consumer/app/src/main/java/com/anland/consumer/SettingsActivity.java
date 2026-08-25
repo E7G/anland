@@ -1031,8 +1031,6 @@ public class SettingsActivity extends Activity {
             topappModeHint.setText(wholeSession
                     ? R.string.topapp_mode_whole_hint
                     : R.string.topapp_mode_focused_hint);
-            topappStopsLabel.setVisibility(wholeSession ? View.VISIBLE : View.GONE);
-            topappStopsInput.setVisibility(wholeSession ? View.VISIBLE : View.GONE);
             topappStopsLabel.setEnabled(enabled);
             topappStopsInput.setEnabled(enabled);
         };

@@ -116,7 +116,7 @@
     </string-array>
     <string name="topapp_mode_focused_hint">模式 1：KWin 和当前活动应用的 scope 保持在 top-app。该 scope 中已有的进程及其子进程都会包含；焦点切换时恢复上一个应用。</string>
     <string name="topapp_mode_whole_hint">模式 2：连接期间将整个 Anland 桌面进程树放入 top-app。后台应用和服务也会提升，功耗更高，但整个会话可获得最高调度优先级。</string>
-    <string name="topapp_stops_label">模式 2 的树根进程名（可选）</string>
+    <string name="topapp_stops_label">扫描结束进程名（可选）</string>
     <string name="topapp_stops_hint">例如 systemd:init（用“:”分隔）；留空使用内置列表</string>
     <string name="mic_switch">将麦克风转发到桌面</string>
     <string name="mic_hint">桌面音频始终通过本设备的扬声器播放。启用此项还会把麦克风反向发送到桌面。下次连接时生效（请重新打开应用）。</string>

@@ -644,8 +644,9 @@ int main(int argc, char **argv)
         return cmd_set(argv, argc);
 
     /* Optional custom stop-name list ("stops=init:my_init:..."), replacing the
-     * built-in one. Accepted in either mode; only the promote path consults
-     * it. Parsed before anything else so failures here fail fast. */
+     * built-in one. Bounds the PPID-upward scan in every mode: promote,
+     * noset (anchor discovery), and restore all use the resulting session
+     * tree root. Parsed before anything else so failures here fail fast. */
     bool noset = false;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "noset") == 0) {
