@@ -581,6 +581,29 @@ static long raw_syscall5(long nr, long a, long b, long c, long d, long e)
     { BPF_JMP | BPF_JEQ | BPF_K, 0, 1, (nr) },                          \
     { BPF_RET | BPF_K, 0, 0, SECCOMP_RET_ALLOW }
 
+/* Argument-checked allow for the parent's one and only clone() call:
+ * clone(SIGCHLD, 0, 0, 0, 0). Any other flags (CLONE_NEWUSER, CLONE_NEWNS,
+ * thread spawning, ...) or a nonzero stack/tid argument is killed, so the
+ * clone allowance cannot be repurposed. args are 64-bit; flags are checked
+ * in both halves, the pointer args in their low halves (they only matter as
+ * "zero or not" -- a hostile 64-bit pointer with a zero low half gives the
+ * attacker nothing the filter cares about). */
+#define ALLOW_CLONE_FORK()                                                  \
+    { BPF_JMP | BPF_JEQ | BPF_K, 0, 13, __NR_clone },                       \
+    { BPF_LD | BPF_W | BPF_ABS, 0, 0, offsetof(struct seccomp_data, args[0]) }, \
+    { BPF_JMP | BPF_JEQ | BPF_K, 0, 11, SIGCHLD },                          \
+    { BPF_LD | BPF_W | BPF_ABS, 0, 0, offsetof(struct seccomp_data, args[0]) + 4 }, \
+    { BPF_JMP | BPF_JEQ | BPF_K, 0, 9, 0 },                                 \
+    { BPF_LD | BPF_W | BPF_ABS, 0, 0, offsetof(struct seccomp_data, args[1]) }, \
+    { BPF_JMP | BPF_JEQ | BPF_K, 0, 7, 0 },                                 \
+    { BPF_LD | BPF_W | BPF_ABS, 0, 0, offsetof(struct seccomp_data, args[2]) }, \
+    { BPF_JMP | BPF_JEQ | BPF_K, 0, 5, 0 },                                 \
+    { BPF_LD | BPF_W | BPF_ABS, 0, 0, offsetof(struct seccomp_data, args[3]) }, \
+    { BPF_JMP | BPF_JEQ | BPF_K, 0, 3, 0 },                                 \
+    { BPF_LD | BPF_W | BPF_ABS, 0, 0, offsetof(struct seccomp_data, args[4]) }, \
+    { BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0 },                                 \
+    { BPF_RET | BPF_K, 0, 0, SECCOMP_RET_ALLOW }
+
 static int sandbox_before_fork(void)
 {
     if (unshare(CLONE_NEWNS) < 0)
@@ -594,17 +617,21 @@ static int sandbox_before_fork(void)
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0)
         return -1;
 
+    /* [ 0..3] arch gate + load syscall nr
+     * [ 4..13] plain per-syscall allows
+     * [14..28] clone, argument-matched to the parent's exact call
+     * [29] default kill */
     struct sock_filter filter[] = {
         { BPF_LD | BPF_W | BPF_ABS, 0, 0, offsetof(struct seccomp_data, arch) },
         { BPF_JMP | BPF_JEQ | BPF_K, 1, 0, AUDIT_ARCH_AARCH64 },
         { BPF_RET | BPF_K, 0, 0, SECCOMP_RET_KILL },
         { BPF_LD | BPF_W | BPF_ABS, 0, 0, offsetof(struct seccomp_data, nr) },
-        ALLOW_NR(__NR_write),   /* worker: cgroup fds */
-        ALLOW_NR(__NR_clone),   /* parent: fork the worker */
-        ALLOW_NR(__NR_wait4),   /* parent: reap the worker */
-        ALLOW_NR(__NR_close),   /* parent: drop the fds */
-        ALLOW_NR(__NR_exit),    /* parent: return from main */
+        ALLOW_NR(__NR_write),       /* worker: cgroup fds */
+        ALLOW_NR(__NR_wait4),       /* parent: reap the worker */
+        ALLOW_NR(__NR_close),       /* parent: drop the fds */
+        ALLOW_NR(__NR_exit),        /* parent: return from main */
         ALLOW_NR(__NR_exit_group),
+        ALLOW_CLONE_FORK(),         /* parent: fork, exact args only */
         { BPF_RET | BPF_K, 0, 0, SECCOMP_RET_KILL },
     };
     struct sock_fprog prog = {
