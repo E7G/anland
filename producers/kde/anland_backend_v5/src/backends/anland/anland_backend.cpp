@@ -680,9 +680,12 @@ void AnlandBackend::updateActiveScheduling(bool force)
     }
     // Self-contained transition: restore the previous client's subtree before
     // boosting the next one; the cgroup files ARE the state, so each event
-    // applies on its own and the consumer tracks nothing.
+    // applies on its own and the consumer tracks nothing. The off carries
+    // SETTREE too -- the promote moved the whole subtree in, so the restore
+    // must move the whole subtree back out (children forked meanwhile ride
+    // along; dead ones are skipped by the helper).
     if (m_activeSchedulingPid > 0) {
-        sendSchedulingEvent(m_activeSchedulingPid, 0);
+        sendSchedulingEvent(m_activeSchedulingPid, SCHEDULING_FLAG_SETTREE);
     }
     m_activeSchedulingPid = pid;
     if (pid > 0) {
