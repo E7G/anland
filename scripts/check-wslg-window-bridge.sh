@@ -24,6 +24,7 @@ cat >/tmp/anland-protocol-check.c <<'EOF'
 _Static_assert(sizeof(struct InputEvent) == 20, "InputEvent ABI changed");
 _Static_assert(sizeof(struct OutputEvent) == 20, "OutputEvent ABI changed");
 _Static_assert(sizeof(struct window_event_payload_v1) == 28, "window payload v1 ABI changed");
+_Static_assert(sizeof(struct window_buffer_pool_v1) == 16, "window buffer pool v1 ABI changed");
 int main(void) { return 0; }
 EOF
 cc -std=gnu11 -Wall -Wextra -Werror -I. /tmp/anland-protocol-check.c -o /tmp/anland-protocol-check
@@ -48,5 +49,10 @@ grep -q 'nativeLinuxWindowEvent' "$jni"
 grep -q 'nativeLinuxWindowEvent' "$java/MainActivity.java"
 grep -q 'nativeSendWindowCommand' "$jni"
 grep -q 'nativeSendWindowCommand' "$java/Native.java"
+
+grep -q 'WINDOW_COMMAND_ATTACH_BUFFERS' common/protocol.h
+grep -q 'OUTPUT_TYPE_WINDOW_FRAME' common/protocol.h
+grep -q 'push_input_event_with_fds_and_length' libdisplay_consumer/display_consumer.h
+grep -q 'push_input_event_with_fds_and_length' libdisplay_consumer/display_consumer.c
 
 echo "WSLg window bridge protocol/source checks passed."
