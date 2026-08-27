@@ -110,6 +110,17 @@
     <string name="second_window_open">Open second window</string>
     <string name="root_switch">Connect with root (helper)</string>
     <string name="root_hint">Launches a root helper (su) that connects to the socket and passes the connection back to the app. Takes effect on next connect (reopen the app).</string>
+    <string name="topapp_switch">Enable foreground scheduling (root)</string>
+    <string name="topapp_hint">Gives the Linux desktop Android foreground CPU priority. Select the scheduling scope below; changes take effect on next connect.</string>
+    <string name="topapp_mode_label">Foreground scheduling scope</string>
+    <string-array name="topapp_mode_options">
+        <item>1 - Focused application</item>
+        <item>2 - Whole desktop session</item>
+    </string-array>
+    <string name="topapp_mode_focused_hint">Mode 1: Keeps KWin and the active application scope in top-app. Existing processes in that scope and child processes are included; the previous application is restored when focus changes.</string>
+    <string name="topapp_mode_whole_hint">Mode 2: Moves the whole Anland desktop process tree into top-app until disconnect. Background applications and services are also boosted, using more power but giving the session maximum priority.</string>
+    <string name="topapp_stops_label">Scan stop process names (optional)</string>
+    <string name="topapp_stops_hint">e.g. systemd:init (":"-separated); empty uses built-in defaults</string>
     <string name="mic_switch">Forward microphone to desktop</string>
     <string name="mic_hint">Desktop audio always plays through this device\'s speaker. Enabling this also sends the mic the other way. Takes effect on next connect (reopen the app).</string>
     <string name="camera_switch">Forward camera to desktop</string>
