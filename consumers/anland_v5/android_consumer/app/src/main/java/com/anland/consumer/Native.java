@@ -62,6 +62,14 @@ public final class Native {
     public void setAudioKeepalive(boolean enabled) { nativeSetAudioKeepalive(handle, enabled); }
     public void sendWindowCommand(int windowId, int command) { nativeSendWindowCommand(handle, windowId, command); }
 
+    /** V3: attach/detach an Android BufferQueue Surface to a KWin window id. */
+    public boolean attachWindowSurface(int windowId, Surface surface) {
+        return nativeAttachWindowSurface(handle, windowId, surface);
+    }
+    public void detachWindowSurface(int windowId) {
+        nativeDetachWindowSurface(handle, windowId);
+    }
+
     // ---- native handle lifecycle + handle-taking entry points ----
 
     private static native long nativeCreate();
@@ -96,4 +104,6 @@ public final class Native {
     private static native void nativeSetAudioLatency(long handle, int speakerMs, int micMs);
     private static native void nativeSetAudioKeepalive(long handle, boolean enabled);
     private static native void nativeSendWindowCommand(long handle, int windowId, int command);
+    private static native boolean nativeAttachWindowSurface(long handle, int windowId, Surface surface);
+    private static native void nativeDetachWindowSurface(long handle, int windowId);
 }
