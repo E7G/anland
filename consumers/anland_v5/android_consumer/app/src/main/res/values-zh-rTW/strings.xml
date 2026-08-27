@@ -96,6 +96,17 @@
     <string name="second_window_open">開啟第二個視窗</string>
     <string name="root_switch">使用 root 連線（輔助程式）</string>
     <string name="root_hint">啟動一個 root 輔助程式（su）連線到 socket，並將連線傳回應用程式。下次連線時生效（請重新開啟應用程式）。</string>
+    <string name="topapp_switch">啟用前景排程（Root）</string>
+    <string name="topapp_hint">讓 Linux 桌面取得 Android 前景 CPU 優先權。可在下方選擇排程範圍，變更會在下次連線時生效。</string>
+    <string name="topapp_mode_label">前景排程範圍</string>
+    <string-array name="topapp_mode_options">
+        <item>1 - 目前焦點應用程式</item>
+        <item>2 - 整個桌面工作階段</item>
+    </string-array>
+    <string name="topapp_mode_focused_hint">模式 1：將 KWin 與目前作用中應用程式所在的 scope 維持在 top-app 中，包含該 scope 既有程序及其子程序；焦點切換時會還原先前應用程式。</string>
+    <string name="topapp_mode_whole_hint">模式 2：連線期間將整個 Anland 桌面程序樹移入 top-app。背景應用程式與服務也會提高優先權，耗電較高，但可取得最高工作階段效能。</string>
+    <string name="topapp_stops_label">掃描停止程序名稱（選用）</string>
+    <string name="topapp_stops_hint">例如 systemd:init（以「:」分隔）；留空則使用內建預設值</string>
     <string name="mic_switch">將麥克風轉發到桌面</string>
     <string name="mic_hint">桌面音訊始終透過本裝置的喇叭播放。啟用此項還會把麥克風反向發送到桌面。下次連線時生效（請重新開啟應用程式）。</string>
     <string name="camera_switch">將相機轉發到桌面</string>
