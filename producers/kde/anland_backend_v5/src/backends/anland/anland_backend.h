@@ -17,7 +17,9 @@
 #include <QPointer>
 #include <QPointF>
 #include <QVector>
+#include <cstdint>
 #include <memory>
+#include <sys/types.h>
 
 extern "C" {
 #include "display_producer.h"
@@ -115,6 +117,15 @@ private:
     void updateMouseCaptureVar();
     void sendConsumerVar(uint32_t var, uint32_t value);
 
+    // Foreground scheduling: the compositor's own subtree is boosted once per
+    // connection (it is always "focused" while rendering); the focused
+    // client's subtree is then reported on each activation change
+    // (restore-previous before boost-next, one self-contained event each --
+    // the cgroup files are the only state, the consumer tracks nothing).
+    void setupSchedulingTracking();
+    void updateActiveScheduling(bool force = false);
+    void sendSchedulingEvent(pid_t pid, uint8_t flags);
+
     static void fallbackTrampoline(void *data);
 
     QString m_socketPath;
@@ -154,6 +165,8 @@ private:
     QMetaObject::Connection m_captureMouseLockConn;
     QMetaObject::Connection m_captureMouseConfinedConn;
     bool m_captureMouseActive = false; // last CONSUMER_VAR_CAPTURE_MOUSE value sent
+
+    pid_t m_activeSchedulingPid = -1;
 };
 
 } // namespace KWin

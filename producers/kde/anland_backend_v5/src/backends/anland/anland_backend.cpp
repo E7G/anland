@@ -161,8 +161,17 @@ bool AnlandBackend::initialize()
     // so Linux apps never see the devices appear/disappear as the consumer comes and
     // goes. The socket fd is attached later (onReconnectTimer) and detached in
     // enterFallback(). Audio is non-critical, so a failure here is not fatal.
-    if (anland_audio_start() < 0) {
+    //
+    // ANLAND_DISABLE_AUDIO=1 skips the audio engine entirely: the anland-audio
+    // PipeWire thread-loop (and the anland-speaker/anland-mic virtual devices) is
+    // never created. Used to sidestep a busy-loop on this platform until the
+    // underlying cause is fixed upstream. The backend simply reports no audio.
+    const bool disableAudio = qEnvironmentVariableIsSet("ANLAND_DISABLE_AUDIO")
+        && qEnvironmentVariableIntValue("ANLAND_DISABLE_AUDIO") != 0;
+    if (!disableAudio && anland_audio_start() < 0) {
         qCWarning(KWIN_ANLAND) << "failed to start audio engine; continuing without audio";
+    } else if (disableAudio) {
+        qCInfo(KWIN_ANLAND) << "anland audio engine disabled by ANLAND_DISABLE_AUDIO";
     }
 
     // The camera engine is NOT started here: its PipeWire thread-loop is brought up
@@ -190,8 +199,12 @@ bool AnlandBackend::initialize()
     // already up (defensive), start immediately.
     if (workspace()) {
         setupMouseCaptureTracking();
+        setupSchedulingTracking();
     } else {
-        connect(kwinApp(), &Application::workspaceCreated, this, &AnlandBackend::setupMouseCaptureTracking);
+        connect(kwinApp(), &Application::workspaceCreated, this, [this]() {
+            setupMouseCaptureTracking();
+            setupSchedulingTracking();
+        });
     }
 
     return true;
@@ -529,6 +542,11 @@ void AnlandBackend::onReconnectTimer()
     // channel coming back up means we must re-assert the current pointer-capture
     // override (a game may still hold its pointer lock across the reconnect).
     sendConsumerVar(CONSUMER_VAR_CAPTURE_MOUSE, m_captureMouseActive ? 1 : 0);
+
+    // Re-assert the compositor's permanent subtree boost, then the focused
+    // client's (the consumer regresses every boost on its own fallback).
+    sendSchedulingEvent(getpid(), SCHEDULING_FLAG_SETTREE | SCHEDULING_FLAG_ON);
+    updateActiveScheduling(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +643,68 @@ void AnlandBackend::sendConsumerVar(uint32_t var, uint32_t value)
     const OutputEvent ev = {
         .type = OUTPUT_TYPE_SET_CONSUMER_VAR,
         .set_consumer_var = { .var = var, .value = value },
+    };
+    push_output_event(m_display, &ev);
+}
+
+// ---------------------------------------------------------------------------
+// Foreground scheduling: compositor + focused client
+// ---------------------------------------------------------------------------
+
+void AnlandBackend::setupSchedulingTracking()
+{
+    if (auto *ws = workspace()) {
+        connect(ws, &Workspace::windowActivated, this, [this]() {
+            updateActiveScheduling();
+        });
+        if (!m_inFallback) {
+            // The compositor itself is boosted permanently while rendering:
+            // it never appears in the off/on focus stream below.
+            sendSchedulingEvent(getpid(), SCHEDULING_FLAG_SETTREE | SCHEDULING_FLAG_ON);
+        }
+        updateActiveScheduling(true);
+    }
+}
+
+void AnlandBackend::updateActiveScheduling(bool force)
+{
+    pid_t pid = 0;
+    if (auto *ws = workspace()) {
+        if (Window *window = ws->activeWindow()) {
+            pid = window->pid();
+        }
+    }
+
+    if (!force && pid == m_activeSchedulingPid) {
+        return;
+    }
+    // Self-contained transition: restore the previous client's subtree before
+    // boosting the next one; the cgroup files ARE the state, so each event
+    // applies on its own and the consumer tracks nothing. The off carries
+    // SETTREE too -- the promote moved the whole subtree in, so the restore
+    // must move the whole subtree back out (children forked meanwhile ride
+    // along; dead ones are skipped by the helper).
+    if (m_activeSchedulingPid > 0) {
+        sendSchedulingEvent(m_activeSchedulingPid, SCHEDULING_FLAG_SETTREE);
+    }
+    m_activeSchedulingPid = pid;
+    if (pid > 0) {
+        sendSchedulingEvent(pid, SCHEDULING_FLAG_SETTREE | SCHEDULING_FLAG_ON);
+    }
+}
+
+void AnlandBackend::sendSchedulingEvent(pid_t pid, uint8_t flags)
+{
+    if (m_inFallback) {
+        return;
+    }
+
+    const OutputEvent ev = {
+        .type = OUTPUT_TYPE_SCHEDULING,
+        .scheduling = {
+            .pid = pid > 0 ? pid : 0,
+            .flags = flags,
+        },
     };
     push_output_event(m_display, &ev);
 }
