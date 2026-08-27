@@ -66,8 +66,13 @@ struct buf_info {
 #define INPUT_TYPE_RESOURCE_INVALID 12
 #define INPUT_TYPE_WINDOW_COMMAND 13
 
-#define WINDOW_COMMAND_ACTIVATE 1
-#define WINDOW_COMMAND_CLOSE    2
+#define WINDOW_COMMAND_ACTIVATE       1
+#define WINDOW_COMMAND_CLOSE          2
+/* V3 per-window zero-copy transport. ATTACH_BUFFERS is followed by
+ * fd_count dmabuf fds and a window_buffer_pool_v1 payload. */
+#define WINDOW_COMMAND_ATTACH_BUFFERS  3
+#define WINDOW_COMMAND_DETACH_BUFFERS  4
+#define WINDOW_COMMAND_FRAME_REQUEST   5
 
 #define SERVICE_TYPE_CAMERA 1
 
@@ -185,6 +190,13 @@ struct OutputEvent {
             uint32_t serial;
         } window;
         struct {
+            uint32_t window_id;
+            uint16_t status;
+            uint16_t flags;
+            uint32_t buffer_index;
+            uint32_t serial;
+        } window_frame;
+        struct {
             uint32_t padding[4];
         };
     };
@@ -195,6 +207,7 @@ struct OutputEvent {
 #define OUTPUT_TYPE_SET_CONSUMER_VAR  3
 #define OUTPUT_TYPE_SCHEDULING        4
 #define OUTPUT_TYPE_WINDOW_EVENT     16
+#define OUTPUT_TYPE_WINDOW_FRAME     17
 
 /* scheduling.flags -- keep the established wire values. */
 #define SCHEDULING_FLAG_SETTREE 0x01
@@ -222,6 +235,21 @@ struct window_event_payload_v1 {
     uint32_t title_size;
     uint32_t app_id_size;
 } __attribute__((packed));
+
+/* V3 ATTACH_BUFFERS trailing payload. Exactly count struct buf_info records
+ * follow this header. Each record corresponds 1:1 with the SCM_RIGHTS fd at
+ * the same index. Versioned so future multi-plane pools can coexist. */
+#define WINDOW_BUFFER_POOL_VERSION 1
+struct window_buffer_pool_v1 {
+    uint32_t version;
+    uint32_t count;
+    uint32_t logical_width;
+    uint32_t logical_height;
+} __attribute__((packed));
+
+#define WINDOW_FRAME_READY          1
+#define WINDOW_FRAME_REATTACH       2
+#define WINDOW_FRAME_DROPPED        3
 
 
 /*
