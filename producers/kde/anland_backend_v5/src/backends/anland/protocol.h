@@ -61,19 +61,44 @@ struct buf_info {
 #define INPUT_TYPE_DISPLAY_REFRESH 7
 #define INPUT_TYPE_CLIPBOARD      8
 #define INPUT_TYPE_TEXT_INPUT      9
-#define INPUT_TYPE_ACTION         10
-/* Consumer -> producer: hands back the fds for a requested service (e.g. camera).
- * The InputEvent carries { service type, fdnum }; the fdnum fds follow as a
- * separate DATA_MSG_INPUT_EXTEND_FDS message (SCM_RIGHTS). */
-#define INPUT_TYPE_RESOURCE       11
+#define INPUT_TYPE_ACTION 10
+#define INPUT_TYPE_RESOURCE 11
 #define INPUT_TYPE_RESOURCE_INVALID 12
+#define INPUT_TYPE_WINDOW_COMMAND 13
 
-/* Service identifiers used by OUTPUT_TYPE_RESOURCES_REQUEST / INPUT_TYPE_RESOURCE. */
+#define WINDOW_COMMAND_ACTIVATE 1
+#define WINDOW_COMMAND_CLOSE    2
+
 #define SERVICE_TYPE_CAMERA 1
 
 #define INPUT_ACTION_DOWN    0
+
 #define INPUT_ACTION_UP      1
 #define INPUT_ACTION_MOVE    2
+
+/* Producer -> consumer: set a transient Android-side runtime parameter (UINT32).
+ * Carried as a fixed-size OutputEvent (no trailing payload): { var, value }.
+ * A non-zero value requests the Android app enable the corresponding behaviour
+ * (e.g. pointer capture) while the producer asserts it; 0 withdraws the request.
+ * The consumer regresses every var to 0 on its own fallback, so the producer
+ * MUST resend the current value on each reconnect. */
+
+/* Var identifiers addressable via OUTPUT_TYPE_SET_CONSUMER_VAR. */
+/* 1 = force-enable Android pointer capture (Wayland zwp_locked_pointer_v1 active,
+ *   i.e. a game grabbed the mouse for relative motion); 0 = release back to the
+ *   user setting. Overrides the pointer_capture setting while asserted. */
+/* Show/hide Android's system IME when a producer text field gains/loses focus. */
+
+/* V3.1 audio extension: 5 deposited fds */
+#define DISPLAY_DEPOSITED_FD_COUNT 5
+
+enum display_deposited_fd {
+    DISPLAY_FD_BUF_READY = 0,
+    DISPLAY_FD_FENCE     = 1,
+    DISPLAY_FD_DATA      = 2,
+    DISPLAY_FD_SHM       = 3,
+    DISPLAY_FD_AUDIO     = 4,
+};
 
 struct InputEvent {
     uint32_t type;
@@ -121,48 +146,83 @@ struct InputEvent {
             uint32_t fdnum;//fdnum是fd的数量,后续会有fdnum个fd跟随在这个结构体后面
         } resource;
         struct {
+            uint32_t window_id;
+            uint32_t command;
+            uint32_t arg0;
+            uint32_t arg1;
+        } window_command;
+        struct {
             uint32_t padding[4];
         };
     };
 } __attribute__((packed));
 
-struct OutputEvent{
+struct OutputEvent {
     uint32_t type;
     union {
         struct {
-            uint32_t size; //这个packet只是通知包 作为header真正数据会集中发送,这里通知随后数据的大小
+            uint32_t size;
         } clipboard;
         struct {
             uint32_t type;
-            uint32_t args[3]; //support 3 args
+            uint32_t args[3];
         } resources_request;
         struct {
-            uint32_t var;   //CONSUMER_VAR_* identifier
-            uint32_t value; //new UINT32 value (0 = default / release)
+            uint32_t var;
+            uint32_t value;
         } set_consumer_var;
-        struct
-        {
+        struct {
+            int32_t  pid;
+            uint8_t  flags;
+            uint8_t  reserved[3];
+            uint32_t reserved2[2];
+        } scheduling;
+        struct {
+            uint32_t window_id;
+            uint16_t action;
+            uint16_t flags;
+            uint32_t size;
+            uint32_t serial;
+        } window;
+        struct {
             uint32_t padding[4];
         };
-
     };
 } __attribute__((packed));
 
-#define OUTPUT_TYPE_CLIPBOARD 1
+#define OUTPUT_TYPE_CLIPBOARD         1
 #define OUTPUT_TYPE_RESOURCES_REQUEST 2
-/* Producer -> consumer: set a transient Android-side runtime parameter (UINT32).
- * Fixed-size OutputEvent { var, value }, no trailing payload. A non-zero value
- * requests the Android app enable the corresponding behaviour while asserted; 0
- * withdraws the request. The consumer regresses every var to 0 on its own
- * fallback, so the producer MUST resend the current value on each reconnect. */
-#define OUTPUT_TYPE_SET_CONSUMER_VAR 3
+#define OUTPUT_TYPE_SET_CONSUMER_VAR  3
+#define OUTPUT_TYPE_SCHEDULING        4
+#define OUTPUT_TYPE_WINDOW_EVENT     16
 
-/* Var identifiers addressable via OUTPUT_TYPE_SET_CONSUMER_VAR. */
-/* 1 = force-enable Android pointer capture (Wayland zwp_locked_pointer_v1 active,
- *   a game grabbed the mouse for relative motion); 0 = release. */
+/* scheduling.flags -- keep the established wire values. */
+#define SCHEDULING_FLAG_SETTREE 0x01
+#define SCHEDULING_FLAG_ON      0x02
+
 #define CONSUMER_VAR_CAPTURE_MOUSE 1
-/* Show/hide Android's system IME when a producer text field gains/loses focus. */
-#define CONSUMER_VAR_ANDROID_IME 2
+#define CONSUMER_VAR_ANDROID_IME   2
+
+#define WINDOW_EVENT_CREATE  1
+#define WINDOW_EVENT_UPDATE  2
+#define WINDOW_EVENT_DESTROY 3
+#define WINDOW_EVENT_FOCUS   4
+#define WINDOW_FLAG_ACTIVE   0x0001
+
+/* Version 1 trailing payload for OUTPUT_TYPE_WINDOW_EVENT CREATE/UPDATE.
+ * It is followed immediately by title_size bytes of UTF-8 title and then
+ * app_id_size bytes of UTF-8 desktop-file/app-id. The fixed OutputEvent
+ * itself remains 20 bytes, preserving the existing data-channel framing. */
+struct window_event_payload_v1 {
+    int32_t  x;
+    int32_t  y;
+    int32_t  width;
+    int32_t  height;
+    int32_t  pid;
+    uint32_t title_size;
+    uint32_t app_id_size;
+} __attribute__((packed));
+
 
 /*
  * Audio runs on its own dedicated bidirectional socketpair (hello fd slot 4),
@@ -185,8 +245,8 @@ struct OutputEvent{
  */
 #define AUDIO_MSG_FORMAT 1
 #define AUDIO_MSG_PCM    2
-#define AUDIO_MSG_SHM 3 //请求使用共享内存环形缓冲区传输音频数据,而不是使用socket传输,这样可以减少数据拷贝和延迟
-#define AUDIO_MSG_SHM_FD 4 //producer -> consumer: 共享内存fd, consumer mmap后可以直接读取音频数据
+#define AUDIO_MSG_SHM    3
+#define AUDIO_MSG_SHM_FD 4
 
 /* PCM sample format codes for struct audio_format.format. */
 #define AUDIO_FORMAT_S16LE 0

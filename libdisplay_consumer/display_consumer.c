@@ -617,6 +617,15 @@ void handle_unhandled_event(display_ctx *ctx, const struct OutputEvent *event)
             }
         }
         break;
+    case OUTPUT_TYPE_WINDOW_EVENT:
+        if (event->window.size > 0) {
+            void *payload = malloc(event->window.size);
+            if (payload) {
+                poll_output_event_extend_data(ctx, payload, event->window.size, 1000);
+                free(payload);
+            }
+        }
+        break;
     default:
         break;
     }
