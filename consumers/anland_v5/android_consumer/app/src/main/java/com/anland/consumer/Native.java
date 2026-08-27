@@ -60,6 +60,7 @@ public final class Native {
     public void setMicEnabled(boolean enabled) { nativeSetMicEnabled(handle, enabled); }
     public void setAudioLatency(int speakerMs, int micMs) { nativeSetAudioLatency(handle, speakerMs, micMs); }
     public void setAudioKeepalive(boolean enabled) { nativeSetAudioKeepalive(handle, enabled); }
+    public void sendWindowCommand(int windowId, int command) { nativeSendWindowCommand(handle, windowId, command); }
 
     // ---- native handle lifecycle + handle-taking entry points ----
 
@@ -94,4 +95,5 @@ public final class Native {
     private static native void nativeSetMicEnabled(long handle, boolean enabled);
     private static native void nativeSetAudioLatency(long handle, int speakerMs, int micMs);
     private static native void nativeSetAudioKeepalive(long handle, boolean enabled);
+    private static native void nativeSendWindowCommand(long handle, int windowId, int command);
 }

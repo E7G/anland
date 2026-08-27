@@ -78,6 +78,9 @@ public class MainActivity extends Activity
     private String mSocketOverride = null;
     // Title shown in recents / freeform (setTaskDescription); default "anland".
     private String mWindowName = "anland";
+    // Sideband mirror of KWin top-levels. Pixel transport stays on the existing
+    // full-output Surface until the per-window dmabuf phase is enabled.
+    private final LinuxWindowRegistry mLinuxWindows = new LinuxWindowRegistry();
     // Live windows keyed by their resolved socket path, so a launch that targets a
     // socket already on screen can focus that window instead of opening a duplicate.
     // Only touched on the main thread (onCreate / onResume / onDestroy).
@@ -223,6 +226,47 @@ public class MainActivity extends Activity
     // Called from native on_fallback (display lib dropped the connection). Runs on a
     // native worker thread, so hop to the UI thread before touching the toast/finish.
     // If the daemon socket is gone the daemon really went down, so close this window.
+    /**
+     * JNI callback for the WSLg window metadata sideband. Native invokes this on
+     * its event thread; all Activity/task mutations are marshalled to the UI thread.
+     */
+    public void nativeLinuxWindowEvent(int id, int action, int flags,
+                                       int x, int y, int width, int height, int pid,
+                                       String title, String appId) {
+        runOnUiThread(() -> {
+            LinuxWindowRegistry.WindowInfo info =
+                mLinuxWindows.apply(id, action, flags, x, y, width, height, pid, title, appId);
+            if (action == LinuxWindowRegistry.DESTROY) {
+                LinuxWindowRegistry.WindowInfo active = mLinuxWindows.active();
+                if (active != null && active.title != null && !active.title.isEmpty()) {
+                    setTaskDescription(new ActivityManager.TaskDescription(active.title));
+                } else {
+                    setTaskDescription(new ActivityManager.TaskDescription(mWindowName));
+                }
+                return;
+            }
+            if (info != null &&
+                (action == LinuxWindowRegistry.FOCUS ||
+                 (flags & LinuxWindowRegistry.FLAG_ACTIVE) != 0)) {
+                String taskTitle = info.title;
+                if (taskTitle == null || taskTitle.trim().isEmpty())
+                    taskTitle = info.appId;
+                if (taskTitle == null || taskTitle.trim().isEmpty())
+                    taskTitle = mWindowName;
+                setTaskDescription(new ActivityManager.TaskDescription(taskTitle));
+            }
+        });
+    }
+
+    /** Android-side control hooks used by future per-window task surfaces. */
+    public void activateLinuxWindow(int windowId) {
+        if (mNative != null) mNative.sendWindowCommand(windowId, 1);
+    }
+
+    public void closeLinuxWindow(int windowId) {
+        if (mNative != null) mNative.sendWindowCommand(windowId, 2);
+    }
+
     public void onFallback(){
         runOnUiThread(() -> {
             // The producer connection is gone: every consumer var regresses to 0.

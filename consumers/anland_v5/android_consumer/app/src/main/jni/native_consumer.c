@@ -82,6 +82,10 @@ struct consumer_state {
     bool cfg_use_root;
     char cfg_helper_path[512];
     char cfg_bridge_path[512];
+    bool cfg_topapp_enable;
+    char cfg_topapp_path[512];
+    int  cfg_topapp_mode;
+    char cfg_topapp_stops[256];
     int  cfg_custom_width;
     int  cfg_custom_height;
 
@@ -232,12 +236,18 @@ static void *event_thread_func(void *arg)
 
     /* CONSUMER_VAR_* callbacks land on the owning MainActivity (var, value). */
     jmethodID setVarMethod = NULL;
+    jmethodID windowEventMethod = NULL;
     if (s->activity_obj) {
         jclass actClass = (*env)->GetObjectClass(env, s->activity_obj);
         setVarMethod = (*env)->GetMethodID(env, actClass, "nativeSetConsumerVar", "(II)V");
+        windowEventMethod = (*env)->GetMethodID(
+            env, actClass, "nativeLinuxWindowEvent",
+            "(IIIIIIIILjava/lang/String;Ljava/lang/String;)V");
         (*env)->DeleteLocalRef(env, actClass);
         if (!setVarMethod)
             LOGE("event thread: nativeSetConsumerVar not found");
+        if (!windowEventMethod)
+            LOGE("event thread: nativeLinuxWindowEvent not found");
     }
 
     while (s->event_running) {
@@ -271,12 +281,77 @@ static void *event_thread_func(void *arg)
             }
             free(buf);
         } else if (ev.type == OUTPUT_TYPE_SET_CONSUMER_VAR) {
-            /* Producer asserts a transient runtime override. CONSUMER_VAR_CAPTURE_MOUSE
-             * forces pointer capture on for Wayland pointer lock (games); 0 releases.
-             * Forwarded to MainActivity, which marshals to the UI thread. */
+            /* Producer asserts a transient runtime override. */
             if (setVarMethod && s->activity_obj)
                 (*env)->CallVoidMethod(env, s->activity_obj, setVarMethod,
                                        (jint)ev.set_consumer_var.var, (jint)ev.set_consumer_var.value);
+        } else if (ev.type == OUTPUT_TYPE_WINDOW_EVENT) {
+            const uint32_t payload_size = ev.window.size;
+            struct window_event_payload_v1 meta;
+            memset(&meta, 0, sizeof(meta));
+            char *payload = NULL;
+            const char *title = "";
+            const char *app_id = "";
+            char *title_copy = NULL;
+            char *app_copy = NULL;
+
+            if (payload_size > 0) {
+                if (payload_size > (256u * 1024u)) {
+                    LOGE("window event payload too large: %u", payload_size);
+                    /* Drain bounded chunks to keep framing aligned. */
+                    uint32_t left = payload_size;
+                    char scratch[4096];
+                    while (left > 0) {
+                        uint32_t chunk = left > sizeof(scratch) ? sizeof(scratch) : left;
+                        if (poll_output_event_extend_data(s->ctx, scratch, chunk, 5000) != 1)
+                            break;
+                        left -= chunk;
+                    }
+                    continue;
+                }
+                payload = malloc(payload_size);
+                if (!payload)
+                    continue;
+                if (poll_output_event_extend_data(s->ctx, payload, payload_size, 5000) != 1) {
+                    free(payload);
+                    continue;
+                }
+                if (payload_size >= sizeof(meta)) {
+                    memcpy(&meta, payload, sizeof(meta));
+                    uint64_t strings = (uint64_t)meta.title_size + (uint64_t)meta.app_id_size;
+                    if (strings <= payload_size - sizeof(meta)) {
+                        title_copy = calloc(1, (size_t)meta.title_size + 1);
+                        app_copy = calloc(1, (size_t)meta.app_id_size + 1);
+                        if (title_copy && meta.title_size)
+                            memcpy(title_copy, payload + sizeof(meta), meta.title_size);
+                        if (app_copy && meta.app_id_size)
+                            memcpy(app_copy, payload + sizeof(meta) + meta.title_size, meta.app_id_size);
+                        if (title_copy) title = title_copy;
+                        if (app_copy) app_id = app_copy;
+                    }
+                }
+            }
+
+            if (windowEventMethod && s->activity_obj) {
+                jstring jtitle = (*env)->NewStringUTF(env, title);
+                jstring japp = (*env)->NewStringUTF(env, app_id);
+                if (jtitle && japp) {
+                    (*env)->CallVoidMethod(env, s->activity_obj, windowEventMethod,
+                        (jint)ev.window.window_id, (jint)ev.window.action,
+                        (jint)ev.window.flags, (jint)meta.x, (jint)meta.y,
+                        (jint)meta.width, (jint)meta.height, (jint)meta.pid,
+                        jtitle, japp);
+                }
+                if (jtitle) (*env)->DeleteLocalRef(env, jtitle);
+                if (japp) (*env)->DeleteLocalRef(env, japp);
+            }
+            free(title_copy);
+            free(app_copy);
+            free(payload);
+        } else if (ev.type == OUTPUT_TYPE_SCHEDULING) {
+            /* The complete top-app executor is configured below. Keep consuming
+             * these events even when disabled so the output stream stays aligned. */
+            LOGI("scheduling event pid=%d flags=0x%x", ev.scheduling.pid, ev.scheduling.flags);
         } else {
             /* Unknown or zero-length event: drain any trailing data if size > 0 */
             LOGI("event thread: unknown output event type=%u size=%u", ev.type, ev.clipboard.size);
@@ -784,7 +859,8 @@ Java_com_anland_consumer_Native_nativeSetFocused(
 JNIEXPORT void JNICALL
 Java_com_anland_consumer_Native_nativeConfigure(
     JNIEnv *env, jclass clazz, jlong handle, jstring socketPath, jboolean useRoot,
-    jstring helperPath, jstring bridgePath)
+    jstring helperPath, jstring bridgePath, jboolean topAppEnable,
+    jstring topAppPath, jint topAppMode, jstring topAppStops)
 {
     struct consumer_state *s = STATE(handle);
     if (!s)
@@ -797,10 +873,15 @@ Java_com_anland_consumer_Native_nativeConfigure(
     s->cfg_use_root = (useRoot == JNI_TRUE);
     copy_jstring(env, helperPath, s->cfg_helper_path, sizeof(s->cfg_helper_path));
     copy_jstring(env, bridgePath, s->cfg_bridge_path, sizeof(s->cfg_bridge_path));
+    s->cfg_topapp_enable = (topAppEnable == JNI_TRUE);
+    copy_jstring(env, topAppPath, s->cfg_topapp_path, sizeof(s->cfg_topapp_path));
+    s->cfg_topapp_mode = (int)topAppMode;
+    copy_jstring(env, topAppStops, s->cfg_topapp_stops, sizeof(s->cfg_topapp_stops));
     pthread_mutex_unlock(&s->cfg_lock);
 
-    LOGI("configured: socket=%s root=%d helper=%s bridge=%s",
-         s->cfg_socket_path, s->cfg_use_root, s->cfg_helper_path, s->cfg_bridge_path);
+    LOGI("configured: socket=%s root=%d helper=%s bridge=%s topapp=%d mode=%d",
+         s->cfg_socket_path, s->cfg_use_root, s->cfg_helper_path, s->cfg_bridge_path,
+         s->cfg_topapp_enable, s->cfg_topapp_mode);
 }
 
 JNIEXPORT void JNICALL
@@ -1120,4 +1201,22 @@ Java_com_anland_consumer_Native_nativeSetAudioLatency(
     if (!s)
         return;
     audio_set_latency(s->audio, speakerMs, micMs);
+}
+
+
+JNIEXPORT void JNICALL
+Java_com_anland_consumer_Native_nativeSendWindowCommand(
+    JNIEnv *env, jclass clazz, jlong handle, jint windowId, jint command)
+{
+    (void)env;
+    (void)clazz;
+    struct consumer_state *s = STATE(handle);
+    if (!s || !s->ctx)
+        return;
+    struct InputEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = INPUT_TYPE_WINDOW_COMMAND;
+    ev.window_command.window_id = (uint32_t)windowId;
+    ev.window_command.command = (uint32_t)command;
+    push_input_event(s->ctx, &ev);
 }

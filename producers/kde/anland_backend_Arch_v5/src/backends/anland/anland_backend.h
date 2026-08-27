@@ -14,6 +14,8 @@
 #include "core/outputbackend.h"
 
 #include <QByteArray>
+#include <QHash>
+#include <QPointer>
 #include <QPointF>
 #include <QVector>
 #include <cstdint>
@@ -30,6 +32,8 @@ class QTimer;
 
 namespace KWin
 {
+
+class Window;
 
 class AnlandOutput;
 class AnlandEglLayer;
@@ -117,6 +121,14 @@ private:
     void sendClipboardToKWin(const QByteArray &text);
     void sendTextInputToKWin(const QByteArray &text);
 
+    void setupWindowBridge();
+    void trackWindow(Window *window);
+    void untrackWindow(Window *window);
+    void sendWindowEvent(Window *window, uint16_t action);
+    void sendWindowFocus(Window *window);
+    void resendWindowSnapshot();
+    void handleWindowCommand(uint32_t windowId, uint32_t command);
+
     // Foreground scheduling: the compositor subtree is boosted once per
     // connection; focus changes restore the previous client before boosting
     // the next one with a self-contained event.
@@ -140,6 +152,12 @@ private:
     bool m_consumerReady = false;
     bool m_inFallback = false;
     QByteArray m_clipboardText;
+
+    bool m_windowBridgeEnabled = false;
+    uint32_t m_nextWindowId = 1;
+    uint32_t m_windowEventSerial = 1;
+    QHash<Window *, uint32_t> m_windowIds;
+    QHash<uint32_t, QPointer<Window>> m_windowsById;
     std::unique_ptr<AbstractDataSource> m_clipboardSource;
 
     pid_t m_activeSchedulingPid = -1;
