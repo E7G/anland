@@ -2,6 +2,7 @@
 #define DISPLAY_PROTOCOL_H
 
 #include <stdint.h>
+#include <sys/types.h>
 
 #define CTRL_MSG_CONSUMER_HELLO  1
 #define CTRL_MSG_PRODUCER_HELLO  2
@@ -140,6 +141,10 @@ struct OutputEvent{
             uint32_t var;   //CONSUMER_VAR_* identifier
             uint32_t value; //new UINT32 value (0 = default / release)
         } set_consumer_var;
+        struct {
+            pid_t pid;      // PID as seen in the producer's PID namespace
+            uint8_t flags;  // SCHEDULING_FLAG_*
+        } scheduling;
         struct
         {
             uint32_t padding[4];
@@ -156,6 +161,15 @@ struct OutputEvent{
  * withdraws the request. The consumer regresses every var to 0 on its own
  * fallback, so the producer MUST resend the current value on each reconnect. */
 #define OUTPUT_TYPE_SET_CONSUMER_VAR 3
+/* Producer -> consumer: foreground-scheduling switch. The producer reports
+ * the currently focused subtree after every reconnect and on each activation
+ * change: {previous pid, off} before {new pid, on}, so each event is
+ * self-contained. */
+#define OUTPUT_TYPE_SCHEDULING 4
+
+/* scheduling.flags */
+#define SCHEDULING_FLAG_SETTREE 0x01 /* operate on pid's whole process subtree */
+#define SCHEDULING_FLAG_ON      0x02 /* 1 = move into top-app, 0 = restore */
 
 /* Var identifiers addressable via OUTPUT_TYPE_SET_CONSUMER_VAR. */
 /* 1 = force-enable Android pointer capture (Wayland zwp_locked_pointer_v1 active,
