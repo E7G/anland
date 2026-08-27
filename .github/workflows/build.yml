@@ -9,7 +9,18 @@ permissions:
   contents: write
 
 jobs:
+  protocol-check:
+    name: Check WSLg bridge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate protocol ABI and backend parity
+        run: |
+          chmod +x scripts/check-wslg-window-bridge.sh
+          scripts/check-wslg-window-bridge.sh
+
   build-apk:
+    needs: protocol-check
     runs-on: ubuntu-latest
     strategy:
       # One plain APK and one with the Tracy client enabled for profiling
