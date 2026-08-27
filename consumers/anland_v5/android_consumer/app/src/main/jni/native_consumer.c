@@ -2,7 +2,9 @@
 #include <android/log.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
+#include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <jni.h>
 #include <pthread.h>
@@ -88,6 +90,14 @@ struct consumer_state {
     char cfg_topapp_stops[256];
     int  cfg_custom_width;
     int  cfg_custom_height;
+    /* Snapshot used by the top-app helper lifecycle after cfg_lock is released. */
+    bool topapp_run_enable;
+    char topapp_run_path[512];
+    int topapp_run_mode;
+    char topapp_run_stops[256];
+
+    pthread_mutex_t topapp_lock;
+    pid_t topapp_root_pid;
 
     /* Pointer-motion delta tracking (per-instance). */
     bool  motion_has_last;
@@ -109,6 +119,9 @@ struct consumer_state {
      * so the camera layer can tell instances apart (see camera_service.c). */
     struct service_info camera_svc;
 };
+
+static void topapp_handle_scheduling_event(struct consumer_state *s,
+                                           const struct OutputEvent *event);
 
 static int collect_dmabufs(struct consumer_state *s)
 {
@@ -349,9 +362,7 @@ static void *event_thread_func(void *arg)
             free(app_copy);
             free(payload);
         } else if (ev.type == OUTPUT_TYPE_SCHEDULING) {
-            /* The complete top-app executor is configured below. Keep consuming
-             * these events even when disabled so the output stream stays aligned. */
-            LOGI("scheduling event pid=%d flags=0x%x", ev.scheduling.pid, ev.scheduling.flags);
+            topapp_handle_scheduling_event(s, &ev);
         } else {
             /* Unknown or zero-length event: drain any trailing data if size > 0 */
             LOGI("event thread: unknown output event type=%u size=%u", ev.type, ev.clipboard.size);
@@ -485,6 +496,239 @@ static int recv_fd_via_root_helper(const char *daemon_sock,
     return fd;
 }
 
+/*
+ * Foreground scheduling ("启用前台调度 (root)"). No resident helper: each
+ * transition is one `su -c libsettopapp.so ...` invocation.
+ *
+ * Mode 1 (focused app): at exit-fallback the consumer asks the helper for the
+ * HOST pid of the session anchor (UNIX_DIAG lookup, "noset"); that anchor
+ * both pins the producer's PID namespace and its /proc/<pid>/root/proc.
+ * Every SCHEDULING report from the producer (producer subtree at init, then
+ * the focused client subtree on each activation change) becomes an O(1) "set"
+ * call that setns()es into the anchor's PID namespace and writes the
+ * container pid straight into the cgroup files. The producer orders the
+ * reports self-contained (off before on), so no consumer-side tracking is
+ * needed.
+ *
+ * Mode 2 (whole session): unchanged legacy behaviour -- promote the whole
+ * producer tree at exit-fallback.
+ *
+ * Both modes restore identically on fallback/stop: one "restore" sweep over
+ * the whole tree rooted at the scanned session root, which covers every pid
+ * either mode boosted.
+ */
+
+static bool safe_helper_path(const char *path)
+{
+    if (!path || path[0] != '/')
+        return false;
+    for (const unsigned char *p = (const unsigned char *)path; *p; p++) {
+        if (!(isalnum(*p) || *p == '/' || *p == '.' || *p == '_'
+              || *p == '-' || *p == '+' || *p == '=' || *p == ':'
+              || *p == '~')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Run `su -c "<cmd>"`, capture its first stdout line. Returns the parsed pid
+ * (>0), or -1 on any failure (no su, helper missing, no output). Blocks for
+ * the duration of the helper; called from the render/event threads where a
+ * short stall at a session boundary is acceptable. */
+static pid_t run_su_capture_pid(const char *cmd)
+{
+    int link[2];
+    if (pipe(link) < 0) {
+        LOGE("settopapp: pipe failed: %s", strerror(errno));
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        LOGE("settopapp: fork failed: %s", strerror(errno));
+        close(link[0]);
+        close(link[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        /* su prompt/progress output must not pollute the pid line. */
+        close(link[0]);
+        dup2(link[1], STDOUT_FILENO);
+        close(link[1]);
+        int devnull = open("/dev/null", O_WRONLY | O_CLOEXEC);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        execlp("su", "su", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+    close(link[1]);
+
+    char line[32];
+    ssize_t n = read(link[0], line, sizeof(line) - 1);
+    close(link[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (n <= 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        LOGE("settopapp: helper failed (status=%d, read=%zd)", status, n);
+        return -1;
+    }
+    line[n] = '\0';
+    int got = atoi(line);
+    return got > 0 ? (pid_t)got : -1;
+}
+
+/* Run `su -c "<cmd>"` ignoring its output; returns the su exit status, or -1
+ * on fork/exec failure. Used for the mode-1 "set" switches, which report
+ * success through logcat rather than stdout. */
+static int run_su_status(const char *cmd)
+{
+    pid_t pid = fork();
+    if (pid < 0) {
+        LOGE("settopapp: fork failed: %s", strerror(errno));
+        return -1;
+    }
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY | O_CLOEXEC);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        execlp("su", "su", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+/* Resolve the producer (holder of the peer of data socket `data_fd`) to its
+ * session-tree-root HOST pid via the helper. promote=false only discovers
+ * ("noset"); promote=true additionally moves the whole tree into top-app
+ * (mode 2), honouring the optional custom stop-name list. Returns the root
+ * pid, or -1. Called at exit-fallback, i.e. the producer is connected right
+ * now, so the diag lookup has a live peer; data_fd is live for this whole
+ * call (enter_fallback closes it only after this returns). In mode 1 the
+ * returned anchor pins the producer's PID namespace (/proc/<pid>/ns/pid) and
+ * its /proc/<pid>/root/proc for the later "set" calls. */
+static pid_t topapp_discover_root(struct consumer_state *s, int data_fd,
+                                  bool promote)
+{
+    struct stat st;
+    if (data_fd < 0 || fstat(data_fd, &st) < 0 || st.st_ino == 0
+        || !safe_helper_path(s->topapp_run_path)) {
+        LOGE("settopapp: data fd not resolvable");
+        return -1;
+    }
+
+    /* The inode identifies our end of the data socketpair; the helper resolves
+     * it to the peer the producer holds. The optional stop-name list bounds
+     * the upward PPID scan in both modes: mode 2 uses the scanned root as the
+     * promote tree root, mode 1 as the namespace anchor (and restore root). */
+    char cmd[sizeof(s->topapp_run_path) + sizeof(s->topapp_run_stops) + 32];
+    if (s->topapp_run_stops[0] != '\0' && promote)
+        snprintf(cmd, sizeof(cmd), "%s %llu stops=%s", s->topapp_run_path,
+                 (unsigned long long)st.st_ino, s->topapp_run_stops);
+    else if (s->topapp_run_stops[0] != '\0')
+        snprintf(cmd, sizeof(cmd), "%s %llu stops=%s noset", s->topapp_run_path,
+                 (unsigned long long)st.st_ino, s->topapp_run_stops);
+    else if (promote)
+        snprintf(cmd, sizeof(cmd), "%s %llu", s->topapp_run_path,
+                 (unsigned long long)st.st_ino);
+    else
+        snprintf(cmd, sizeof(cmd), "%s %llu noset", s->topapp_run_path,
+                 (unsigned long long)st.st_ino);
+
+    pid_t root = run_su_capture_pid(cmd);
+    if (root > 0)
+        LOGI("settopapp: tree root %d %s", (int)root,
+             promote ? "promoted to top-app" : "resolved (anchor)");
+    return root;
+}
+
+/* Mode 1: O(1) switch of one container pid (or its subtree) between top-app
+ * and the root groups, via the anchor's PID namespace. */
+static int topapp_set(struct consumer_state *s, pid_t container_pid,
+                      bool on, bool settree)
+{
+    pthread_mutex_lock(&s->topapp_lock);
+    const pid_t anchor = s->topapp_root_pid;
+    pthread_mutex_unlock(&s->topapp_lock);
+    if (anchor <= 0)
+        return -1;
+
+    char cmd[sizeof(s->topapp_run_path) + 96];
+    const int length = snprintf(cmd, sizeof(cmd), "%s set %d %d opt=%s settree=%s",
+                                s->topapp_run_path, (int)anchor, (int)container_pid,
+                                on ? "on" : "off", settree ? "true" : "false");
+    if (length <= 0 || (size_t)length >= sizeof(cmd))
+        return -1;
+    return run_su_status(cmd);
+}
+
+/* Undo every mode-1 boost of this connection: the focused pid (if any) and
+ * KWin's own subtree back to the root groups. */
+/* Undo every boost of this connection: restore the whole scanned tree rooted
+ * at topapp_root_pid back to the root cgroups. Shared by both modes -- the
+ * anchor tree covers KWin's subtree and every focused client subtree mode 1
+ * boosted, and mode 2 promoted exactly that tree in the first place. Safe to
+ * call with the producer already gone: restore walks the root's tree as it
+ * exists NOW (leftover processes still move back; dead ones skip). */
+static void topapp_restore_tree(struct consumer_state *s)
+{
+    pthread_mutex_lock(&s->topapp_lock);
+    pid_t root = s->topapp_root_pid;
+    s->topapp_root_pid = 0;
+    pthread_mutex_unlock(&s->topapp_lock);
+
+    if (root <= 0)
+        return;
+
+    char cmd[sizeof(s->topapp_run_path) + 32];
+    snprintf(cmd, sizeof(cmd), "%s %d restore", s->topapp_run_path, (int)root);
+    if (run_su_capture_pid(cmd) > 0)
+        LOGI("settopapp: tree root %d restored", (int)root);
+}
+
+static void topapp_handle_scheduling_event(struct consumer_state *s,
+                                           const struct OutputEvent *event)
+{
+    /* Only mode 1 consumes per-pid reports (mode 2 promoted the whole tree
+     * once at exit-fallback), and only when the feature is enabled for this
+     * connection -- with foreground scheduling off the producer may still
+     * send events (it cannot know the Android-side setting), and they must
+     * not spawn su invocations. */
+    if (s->topapp_run_mode != 1 || !s->topapp_run_enable)
+        return;
+
+    pthread_mutex_lock(&s->topapp_lock);
+    const bool have_anchor = s->topapp_root_pid > 0;
+    pthread_mutex_unlock(&s->topapp_lock);
+    if (!have_anchor)
+        return;
+
+    /* Self-contained switch: the producer already ordered the events so an
+     * "off" for the previous client arrives before the "on" for the next.
+     * Every event maps 1:1 onto one O(1) helper "set" invocation. */
+    const bool on = event->scheduling.flags & SCHEDULING_FLAG_ON;
+    const bool settree = event->scheduling.flags & SCHEDULING_FLAG_SETTREE;
+
+    if (event->scheduling.pid == 0 && !on)
+        return;   /* nothing to restore; no focused client reported */
+
+    if (topapp_set(s, event->scheduling.pid, on, settree) != 0)
+        LOGE("settopapp: set pid=%d on=%d tree=%d failed",
+             (int)event->scheduling.pid, on, settree);
+    else
+        LOGI("settopapp: pid %d %s (%s)", (int)event->scheduling.pid,
+             on ? "promoted" : "restored",
+             settree ? "tree" : "process");
+}
+
 static int do_connect(struct consumer_state *s)
 {
     /* Snapshot the connection config for this attempt. */
@@ -496,9 +740,16 @@ static int do_connect(struct consumer_state *s)
     memcpy(sock_path, s->cfg_socket_path, sizeof(sock_path));
     memcpy(helper_path, s->cfg_helper_path, sizeof(helper_path));
     memcpy(bridge_path, s->cfg_bridge_path, sizeof(bridge_path));
+    s->topapp_run_enable = s->cfg_topapp_enable;
+    memcpy(s->topapp_run_path, s->cfg_topapp_path, sizeof(s->topapp_run_path));
+    s->topapp_run_mode = s->cfg_topapp_mode == 2 ? 2 : 1;
+    memcpy(s->topapp_run_stops, s->cfg_topapp_stops, sizeof(s->topapp_run_stops));
     pthread_mutex_unlock(&s->cfg_lock);
 
     const char *sock = sock_path;
+
+    /* Never carry a previous connection's foreground boost into a reconnect. */
+    topapp_restore_tree(s);
 
     if (s->ctx) {
         audio_set_ctx(s->audio, NULL);   /* detach audio before the old ctx (and its fd) dies */
@@ -596,6 +847,9 @@ static void on_fallback(void *userdata)
     struct consumer_state *s = userdata;
     LOGI("fallback triggered");
 
+    /* The producer is gone; restore any top-app boost immediately. */
+    topapp_restore_tree(s);
+
     audio_set_ctx(s->audio, NULL);   /* the lib has closed the audio fd; stop touching it */
 
     /* Let the owning MainActivity probe the daemon socket and close the window if the
@@ -644,6 +898,16 @@ static void on_exit_fallback(void *userdata)
 {
     struct consumer_state *s = userdata;
     LOGI("exit fallback triggered");
+
+    if (s->topapp_run_enable && s->topapp_run_path[0] != '\0') {
+        pid_t root = topapp_discover_root(s, get_data_fd(s->ctx),
+                                          s->topapp_run_mode == 2);
+        if (root > 0) {
+            pthread_mutex_lock(&s->topapp_lock);
+            s->topapp_root_pid = root;
+            pthread_mutex_unlock(&s->topapp_lock);
+        }
+    }
 
     send_refresh_rate(s);
 
@@ -785,6 +1049,8 @@ Java_com_anland_consumer_Native_nativeCreate(JNIEnv *env, jclass clazz)
         return 0;
     pthread_mutex_init(&s->lock, NULL);
     pthread_mutex_init(&s->cfg_lock, NULL);
+    pthread_mutex_init(&s->topapp_lock, NULL);
+    s->cfg_topapp_mode = 1;
     strncpy(s->cfg_socket_path, "/data/local/tmp/display_daemon.sock",
             sizeof(s->cfg_socket_path) - 1);
     s->audio = audio_create();
@@ -810,8 +1076,12 @@ Java_com_anland_consumer_Native_nativeDestroy(JNIEnv *env, jclass clazz, jlong h
     }
     if (s->ctx) {
         stop_event_thread(s);
+        join_event_thread(s);
+        topapp_restore_tree(s);
         disconnect(s->ctx);
         s->ctx = NULL;
+    } else {
+        topapp_restore_tree(s);
     }
     cleanup_dmabufs(s);
     if (s->window) {
@@ -838,6 +1108,7 @@ Java_com_anland_consumer_Native_nativeDestroy(JNIEnv *env, jclass clazz, jlong h
             (*g_jvm)->DetachCurrentThread(g_jvm);
     }
     s->activity_obj = NULL;
+    pthread_mutex_destroy(&s->topapp_lock);
     pthread_mutex_destroy(&s->cfg_lock);
     pthread_mutex_destroy(&s->lock);
     LOGI("instance %p destroyed", (void *)s);
@@ -875,13 +1146,19 @@ Java_com_anland_consumer_Native_nativeConfigure(
     copy_jstring(env, bridgePath, s->cfg_bridge_path, sizeof(s->cfg_bridge_path));
     s->cfg_topapp_enable = (topAppEnable == JNI_TRUE);
     copy_jstring(env, topAppPath, s->cfg_topapp_path, sizeof(s->cfg_topapp_path));
-    s->cfg_topapp_mode = (int)topAppMode;
+    s->cfg_topapp_mode = topAppMode == 2 ? 2 : 1;
     copy_jstring(env, topAppStops, s->cfg_topapp_stops, sizeof(s->cfg_topapp_stops));
+    for (char *p = s->cfg_topapp_stops; *p; p++) {
+        if ((unsigned char)*p < 0x20 || *p == 0x7f) {
+            s->cfg_topapp_stops[0] = '\0';
+            break;
+        }
+    }
     pthread_mutex_unlock(&s->cfg_lock);
 
-    LOGI("configured: socket=%s root=%d helper=%s bridge=%s topapp=%d mode=%d",
+    LOGI("configured: socket=%s root=%d helper=%s bridge=%s topapp=%d mode=%d stops=%s",
          s->cfg_socket_path, s->cfg_use_root, s->cfg_helper_path, s->cfg_bridge_path,
-         s->cfg_topapp_enable, s->cfg_topapp_mode);
+         s->cfg_topapp_enable, s->cfg_topapp_mode, s->cfg_topapp_stops);
 }
 
 JNIEXPORT void JNICALL
@@ -925,8 +1202,13 @@ Java_com_anland_consumer_Native_nativeStart(
     }
 
     if (s->ctx) {
+        stop_event_thread(s);
+        join_event_thread(s);
+        topapp_restore_tree(s);
         disconnect(s->ctx);
         s->ctx = NULL;
+    } else {
+        topapp_restore_tree(s);
     }
     s->motion_has_last = false;
     cleanup_dmabufs(s);
@@ -996,8 +1278,11 @@ Java_com_anland_consumer_Native_nativeStop(
     if (s->ctx) {
         stop_event_thread(s);
         join_event_thread(s);
+        topapp_restore_tree(s);
         disconnect(s->ctx);
         s->ctx = NULL;
+    } else {
+        topapp_restore_tree(s);
     }
 
     // Disable clip listener on Java side

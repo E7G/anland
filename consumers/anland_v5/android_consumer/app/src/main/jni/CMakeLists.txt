@@ -76,6 +76,23 @@ set_target_properties(fdhelper PROPERTIES
 
 target_link_libraries(fdhelper log)
 
+# Root helper for foreground scheduling. It is packaged as lib*.so so Android
+# extracts it into nativeLibraryDir with executable permission, then native
+# launches it through su -c for short, non-resident cgroup transitions.
+add_executable(settopapp
+    settopapp.c
+)
+
+set_target_properties(settopapp PROPERTIES
+    PREFIX "lib"
+    OUTPUT_NAME "settopapp"
+    SUFFIX ".so"
+)
+
+target_compile_options(settopapp PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(settopapp log)
+
+
 # Root helper for "immersive mode": grabs the input devices (EVIOCGRAB) and
 # streams their events to the app over a bridge socket. Same lib*.so packaging
 # trick as fdhelper above -- the app launches it via `su -c` because
