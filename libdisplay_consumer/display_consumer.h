@@ -14,6 +14,13 @@ int  select_dmabuf(display_ctx *ctx, int idx);
 int  refresh_done(display_ctx *ctx);
 int  push_input_event(display_ctx *ctx, const struct InputEvent *event);
 int  push_input_event_with_length(display_ctx *ctx, const struct InputEvent *event, void* payload, size_t size);
+
+/* Atomically send one InputEvent, an SCM_RIGHTS fd vector, then an inline
+ * trailing payload. Used by WSLg V3 window BufferQueue attachment so no other
+ * input writer can interleave between the three pieces. Returns 0/-1. */
+int  push_input_event_with_fds_and_length(display_ctx *ctx,
+        const struct InputEvent *event, int *fds, int fd_count,
+        const void *payload, size_t size);
 int  set_fallback_callback(display_ctx *ctx, void (*on_fallback)(void *), void *userdata);
 int  poll_output_event(display_ctx *ctx, struct OutputEvent *event, int timeout_ms);
 int  poll_output_event_extend_data(display_ctx *ctx, void* payload, size_t size, int timeout_ms);
