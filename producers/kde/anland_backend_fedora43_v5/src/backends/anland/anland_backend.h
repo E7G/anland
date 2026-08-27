@@ -15,6 +15,7 @@
 #include "core/renderdevice.h"
 
 #include <QByteArray>
+#include <QHash>
 #include <QPointer>
 #include <QPointF>
 #include <QVector>
@@ -35,6 +36,8 @@ class QTimer;
 
 namespace KWin
 {
+
+class Window;
 
 class AnlandOutput;
 class AnlandInputDevice;
@@ -108,6 +111,14 @@ private:
     // Inject UTF-8 text from the consumer's IME into the focused KWin client.
     void sendTextInputToKWin(const QByteArray &text);
 
+    void setupWindowBridge();
+    void trackWindow(Window *window);
+    void untrackWindow(Window *window);
+    void sendWindowEvent(Window *window, uint16_t action);
+    void sendWindowFocus(Window *window);
+    void resendWindowSnapshot();
+    void handleWindowCommand(uint32_t windowId, uint32_t command);
+
     // Consumer-var bridge: force the Android app into pointer-capture (relative
     // mouse) mode while a Wayland client holds an active pointer constraint --
     // either a zwp_locked_pointer_v1 (native game pointer lock, and Xwayland's
@@ -146,6 +157,12 @@ private:
     // consumer sets the same text on Android -> consumer sends back to KWin).
     // QByteArray is trivially sent over the data channel as UTF-8.
     QByteArray m_clipboardText;
+
+    bool m_windowBridgeEnabled = false;
+    uint32_t m_nextWindowId = 1;
+    uint32_t m_windowEventSerial = 1;
+    QHash<Window *, uint32_t> m_windowIds;
+    QHash<uint32_t, QPointer<Window>> m_windowsById;
 
     // Active pointer-constraint tracking for CONSUMER_VAR_CAPTURE_MOUSE. We mirror
     // KWin's own updatePointerConstraints() triggers (window activation + the
