@@ -11,7 +11,7 @@ sleep 1
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 mkdir -p "$XDG_RUNTIME_DIR"; chmod 0700 "$XDG_RUNTIME_DIR"
 unset DISPLAY
-export ANLAND_SOCKET=/run/display.sock
+export ANLAND_SOCKET="$SOCK"
 export ANLAND=1
 export ANLAND_DRM_DEVICE=/dev/dri/renderD128
 export MESA_LOADER_DRIVER_OVERRIDE=kgsl GALLIUM_DRIVER=kgsl FD_FORCE_KGSL=1
