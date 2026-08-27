@@ -657,3 +657,50 @@ void push_input_event_with_fds(display_ctx *ctx, const struct InputEvent *event,
     if (!ok)
         enter_fallback(ctx);   /* outside the lock */
 }
+
+int push_input_event_with_fds_and_length(display_ctx *ctx,
+        const struct InputEvent *event, int *fds, int fd_count,
+        const void *payload, size_t size)
+{
+    if (!ctx || !event || fd_count < 0 || size > (1024u * 1024u)
+        || (fd_count > 0 && !fds) || (size > 0 && !payload)) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (ctx->fallback) {
+        errno = ENOTCONN;
+        return -1;
+    }
+
+    struct data_msg hdr = {
+        .type = DATA_MSG_INPUT_EVENT,
+        .size = sizeof(struct InputEvent),
+    };
+    uint8_t msg[sizeof(struct data_msg) + sizeof(struct InputEvent)];
+    memcpy(msg, &hdr, sizeof(hdr));
+    memcpy(msg + sizeof(hdr), event, sizeof(*event));
+
+    bool ok = false;
+    pthread_mutex_lock(&ctx->data_lock);
+    const int fd = ctx->data_fd;
+    if (fd >= 0 && send_all(fd, msg, sizeof(msg)) == 0) {
+        ok = true;
+        if (fd_count > 0) {
+            struct data_msg fhdr = {
+                .type = DATA_MSG_INPUT_EXTEND_FDS,
+                .size = 0,
+            };
+            ok = send_fds(fd, &fhdr, sizeof(fhdr), fds, fd_count) >= 0;
+        }
+        if (ok && size > 0) {
+            ok = send_all(fd, payload, size) == 0;
+        }
+    }
+    pthread_mutex_unlock(&ctx->data_lock);
+
+    if (!ok) {
+        enter_fallback(ctx);
+        return -1;
+    }
+    return 0;
+}
