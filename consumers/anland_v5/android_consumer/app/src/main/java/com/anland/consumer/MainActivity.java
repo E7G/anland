@@ -289,12 +289,9 @@ public class MainActivity extends Activity
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (!isSocketFile(resolveSocketPath())) {
-            //exit
-            android.widget.Toast.makeText(this, "Deamon Down",
-                    android.widget.Toast.LENGTH_SHORT).show();
-            finish();
-        }
+        // Do not finish on a transient/SELinux-denied socket stat. Native
+        // transport owns liveness and will reconnect when the daemon returns.
+        Log.i(TAG, "window focus=" + hasFocus + " socket=" + resolveSocketPath());
         if (hasFocus) {
             // Become the accessibility-key target and the focused instance, so real
             // camera frames route to this window (others get blank frames).
@@ -1409,6 +1406,7 @@ public class MainActivity extends Activity
     @Override
     protected void onResume() {
         super.onResume();
+        Log.i(TAG, "onResume");
 
         // Bounced to Settings from onCreate (socket missing): nothing was set up, so
         // just exit this window instead of running the connect logic.
@@ -1501,6 +1499,7 @@ public class MainActivity extends Activity
 
     @Override
     protected void onPause() {
+        Log.i(TAG, "onPause");
         super.onPause();
         // Socket-missing bounce: no pipeline exists, so skip teardown (mNative is
         // null) and don't let the jump to Settings trigger any of it.
@@ -1512,12 +1511,17 @@ public class MainActivity extends Activity
         DisplayManager dm = getSystemService(DisplayManager.class);
         if (dm != null)
             dm.unregisterDisplayListener(displayListener);
-        mNative.stop();
+        // Keep the transport alive across transient focus/surface pauses. On
+        // Android 14+ SurfaceView is briefly paused during launch/IME changes;
+        // tearing down here leaves Weston with a permanent black fallback.
+        if (mNative != null && (isFinishing() || isChangingConfigurations()))
+            mNative.stop();
         activeTouchPointers.clear();
     }
 
     @Override
     protected void onDestroy() {
+        Log.i(TAG, "onDestroy");
         releasePointerCapture(false);
         if (mRegisteredSocket != null) {
             sWindowsBySocket.remove(mRegisteredSocket, this);
@@ -1641,9 +1645,11 @@ public class MainActivity extends Activity
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
+        Log.i(TAG, "surfaceDestroyed");
         surfaceReady = false;
         releasePointerCapture(false);
-        mNative.stop();
+        if (mNative != null && (isFinishing() || isChangingConfigurations()))
+            mNative.stop();
     }
 
 
