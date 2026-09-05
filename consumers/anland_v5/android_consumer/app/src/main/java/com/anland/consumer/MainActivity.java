@@ -493,6 +493,11 @@ public class MainActivity extends Activity
         getWindow().setDecorFitsSystemWindows(false);
 
         surfaceView = new SurfaceView(this);
+        // Keep the compositor output above the parent window's opaque layer.
+        // Android 14+/SurfaceFlinger may otherwise place a BLAST SurfaceView
+        // at z=-2 behind the fullscreen Activity, yielding an all-black frame.
+        surfaceView.setZOrderOnTop(true);
+        surfaceView.getHolder().setFormat(android.graphics.PixelFormat.RGBA_8888);
         // Give the content view an explicit focus target. Pointer-captured events
         // are routed along the focused-view path; the root override below then
         // intercepts them before the focused child handles them.
