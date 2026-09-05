@@ -782,6 +782,17 @@ static int do_connect(struct consumer_state *s)
         return -1;
     }
 
+    /* Include GPU_COLOR_OUTPUT so Weston/KWin can render directly into the
+     * SurfaceView dmabufs; retain sampled/overlay bits required by SurfaceFlinger.
+     * CPU_WRITE keeps the fallback pixman path usable on devices without a DRI
+     * render node (such as clover). */
+    const uint64_t usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+                           AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT |
+                           AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN |
+                           AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY;
+    int usage_rc = anw_set_usage64(win, usage);
+    LOGI("set usage64=0x%llx rc=%d", (unsigned long long)usage, usage_rc);
+
     ANativeWindow_setBuffersGeometry(win, s->screen_w, s->screen_h,
                                      AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM);
 
@@ -815,8 +826,17 @@ static int do_connect(struct consumer_state *s)
         return -1;
     }
 
+    /* Some Android 14/15 compositor paths report Display#getRefreshRate as
+     * zero while the SurfaceView is being attached.  Anland's producer uses
+     * this value to schedule repaints; advertising 0 leaves the Weston output
+     * enabled but idle, resulting in permanently black buffers.  Keep the
+     * protocol value valid and use the panel's normal 60 Hz as a conservative
+     * fallback until Java delivers the real rate. */
+    uint32_t refresh_mhz = s->refresh_mhz ? s->refresh_mhz : 60000;
     set_screen_info(s->ctx, s->screen_w, s->screen_h,
-                    PIXEL_FORMAT_RGBA_8888, s->refresh_mhz);
+                    PIXEL_FORMAT_RGBA_8888, refresh_mhz);
+    if (s->refresh_mhz == 0)
+        LOGI("refresh rate unavailable; advertising fallback %u mHz", refresh_mhz);
     push_dmabufs(s->ctx, s->dmabuf_fds, s->dmabuf_infos, s->buf_count);
 
     /* Register the camera service only when it was initialised (i.e. the user

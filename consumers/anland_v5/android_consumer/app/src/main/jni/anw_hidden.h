@@ -55,6 +55,7 @@ typedef struct ANativeWindowBuffer {
 
 /* perform() ops / API ids (AOSP system/window.h) */
 enum {
+    ANW_SET_USAGE64    = 30,
     ANW_API_CONNECT    = 13,
     ANW_API_DISCONNECT = 14,
     ANW_API_CPU        = 2,
@@ -83,6 +84,16 @@ struct anw_window {
     int (*queueBuffer)(struct anw_window *, ANativeWindowBuffer *, int fenceFd);
     int (*cancelBuffer)(struct anw_window *, ANativeWindowBuffer *, int fenceFd);
 };
+
+/* Android's Surface producer defaults to GPU_TEXTURE|COMPOSER_OVERLAY (0x900),
+ * which is not renderable by the Anland producer. Request a linear, renderable
+ * allocation before setting geometry. This is the private 64-bit usage perform
+ * opcode used by Android 14+ (NATIVE_WINDOW_SET_USAGE64). */
+static inline int anw_set_usage64(ANativeWindow *w, uint64_t usage)
+{
+    struct anw_window *aw = (struct anw_window *)w;
+    return aw->perform(aw, ANW_SET_USAGE64, usage);
+}
 
 static inline int anw_api_connect(ANativeWindow *w, int api)
 {
