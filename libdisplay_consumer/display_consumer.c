@@ -433,12 +433,15 @@ int refresh_done(display_ctx *ctx)
         return -1;
 
     /* Block (with a 5s safety timeout) on the fence channel: the arrival of the
-     * producer's per-frame message is the render-done signal. Timeout / no POLLIN
-     * (producer stalled or gone) -> fall back so the render thread never hangs. */
+     * producer's per-frame message is the render-done signal. A static Weston
+     * scene may legitimately have no repaint for longer than the timeout; in
+     * that case present the CPU-backed buffer immediately instead of tearing the
+     * Android surface down and entering the reconnect loop. A real disconnect is
+     * still detected below when recvmsg returns EOF/error. */
     struct pollfd pfd = { .fd = ctx->fence_fd, .events = POLLIN };
     int ret = poll(&pfd, 1, 5000);
     if (ret <= 0 || !(pfd.revents & POLLIN)) {
-        enter_fallback(ctx);
+        ctx->buffer_pending = false;
         return -1;
     }
     ctx->buffer_pending = false;
