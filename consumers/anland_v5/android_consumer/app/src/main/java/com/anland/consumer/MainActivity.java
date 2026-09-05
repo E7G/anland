@@ -1472,9 +1472,12 @@ public class MainActivity extends Activity
         // later reconnect. Idempotent, so safe to call on every resume.
         applyCameraState();
         if (surfaceReady) {
-            mNative.stop();
+            // Do not tear down/recreate the transport on a transient Android
+            // onPause/onResume pair (IME, task animation, notification shade).
+            // SurfaceView remains valid and the native reconnect state machine
+            // already handles real producer/consumer loss; restarting here was
+            // the source of intermittent black frames on Android 14+.
             applyConnectionConfig();
-            startNative(surfaceView.getHolder().getSurface());
             pushRefreshRate();
             applyMicState();
             applyAudioLatency();
