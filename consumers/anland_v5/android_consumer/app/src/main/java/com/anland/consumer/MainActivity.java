@@ -388,7 +388,12 @@ public class MainActivity extends Activity
             android.system.StructStat st = android.system.Os.stat(path);
             return android.system.OsConstants.S_ISSOCK(st.st_mode);
         } catch (android.system.ErrnoException e) {
-            return false;
+            // Android's SELinux policy may deny an untrusted app getattr on the
+            // daemon socket even though connect(2) is explicitly allowed by the
+            // module policy. Treat EACCES as an indeterminate probe and let the
+            // native connect path make the authoritative check; only ENOENT and
+            // non-socket errors should bounce to Settings.
+            return e.errno == android.system.OsConstants.EACCES;
         }
     }
 
