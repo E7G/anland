@@ -439,7 +439,11 @@ int refresh_done(display_ctx *ctx)
      * Android surface down and entering the reconnect loop. A real disconnect is
      * still detected below when recvmsg returns EOF/error. */
     struct pollfd pfd = { .fd = ctx->fence_fd, .events = POLLIN };
-    int ret = poll(&pfd, 1, 5000);
+    /* Do not block the Android BufferQueue on a producer fence. Weston may
+     * legitimately defer the first repaint while Xwayland is starting; queue
+     * the CPU-backed buffer immediately and let SurfaceFlinger consume it.
+     * This avoids the permanent black frame observed on Android 14+/17. */
+    int ret = poll(&pfd, 1, 0);
     if (ret <= 0 || !(pfd.revents & POLLIN)) {
         ctx->buffer_pending = false;
         return -1;
