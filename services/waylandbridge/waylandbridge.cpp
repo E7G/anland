@@ -1176,6 +1176,29 @@ static bool g_sock_listen = true;                      /* socket_listen (same) *
  * cfg_load_sock_cfg before any binder/event thread exists, read-only after */
 static const char* cfg_runtime_dir(void) { return g_sock_dir; }
 
+/* Publish the effective Anland zoom into runtime_dir so container-side X11/
+ * Electron launchers can consume the same daemon-owned value without Binder.
+ * runtime_dir is already bind-mounted into the Droidspaces container. */
+static void cfg_publish_zoom_runtime(void) {
+    char path[320], tmp[324];
+    snprintf(path, sizeof(path), "%s/zoom", g_sock_dir);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE* f = fopen(tmp, "w");
+    if (!f) { LOGE("zoom publish open %s: %s", tmp, strerror(errno)); return; }
+    fprintf(f, "%d\n", g_cfg_zoom);
+    if (fclose(f) != 0) {
+        LOGE("zoom publish flush %s: %s", tmp, strerror(errno));
+        unlink(tmp);
+        return;
+    }
+    if (rename(tmp, path) != 0) {
+        LOGE("zoom publish rename %s: %s", path, strerror(errno));
+        unlink(tmp);
+        return;
+    }
+    chmod(path, 0644);
+}
+
 /* known config keys → valid domain (under g_cfg_lock); unknown keys rejected */
 static bool cfg_domain(const std::string& key, int* lo, int* hi) {
     if (key == "zoom") { *lo = 50; *hi = 300; return true; }
@@ -1252,6 +1275,7 @@ static void cfg_save_locked(void) {
         LOGE("config save flush: %s", strerror(errno));
     if (rename(tmp, AWL_CFG_PATH) != 0)
         LOGE("config rename %s: %s", AWL_CFG_PATH, strerror(errno));
+    cfg_publish_zoom_runtime();
 }
 
 /* Startup socket-config load (main, before mkdir/listen — runs once, no
@@ -2106,6 +2130,7 @@ int main(int argc, char** argv) {
     }
 
     cfg_load_and_apply();   /* daemon config: restore zoom etc. at startup (#31) */
+    cfg_publish_zoom_runtime();  /* expose daemon-owned zoom to container launchers */
 
     /* binder service */
     if (!binder_plat_init()) return 1;
