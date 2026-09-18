@@ -666,9 +666,11 @@ public class AwlWindowActivity extends Activity {
     }
 
     /* ---- IME bridge ----
-     * hidden-EditText display side: 1x1 invisible, disabled by default;
-     * enable+focus+show when needed. The InputConnection below bridges the
-     * full table (text → text-input protocol; queries ← state cache). */
+     * hidden-EditText display side: 1x1 invisible and permanently serviceable
+     * while the Activity exists. Keeping one stable Android served editor
+     * avoids InputConnection races across fast Wayland text-input enter/leave
+     * transitions. The InputConnection below bridges the full table
+     * (text → text-input protocol; queries ← state cache). */
 
     private void initHiddenInput() {
         hiddenInput = new EditText(this) {
@@ -687,9 +689,16 @@ public class AwlWindowActivity extends Activity {
         hiddenInput.setBackgroundColor(android.graphics.Color.TRANSPARENT);
         hiddenInput.setCursorVisible(false);
         hiddenInput.setAlpha(0f);
-        hiddenInput.setEnabled(false);
-        hiddenInput.setFocusable(false);
-        hiddenInput.setFocusableInTouchMode(false);
+        /*
+         * Do not toggle enabled/focusable on every Wayland IME show/hide.
+         * Android may still hold the old InputConnection while the view is
+         * being re-enabled, which makes showSoftInput() target a view that is
+         * not yet the served editor ("view is not served").
+         */
+        hiddenInput.setEnabled(true);
+        hiddenInput.setFocusable(true);
+        hiddenInput.setFocusableInTouchMode(true);
+        hiddenInput.setShowSoftInputOnFocus(false);
         hiddenInput.setClickable(false);
         hiddenInput.setLongClickable(false);
         hiddenInput.setImeOptions(EditorInfo.IME_ACTION_GO
@@ -769,16 +778,27 @@ public class AwlWindowActivity extends Activity {
                     + " focus=" + hasWindowFocus() + ")");
             return;
         }
-        hiddenInput.setEnabled(true);
-        hiddenInput.setFocusable(true);
-        hiddenInput.setFocusableInTouchMode(true);
         boolean focused = hiddenInput.requestFocus();
-        /* explicit (flags=0), not SHOW_IMPLICIT: the wl client asked for the
-         * panel; InputMethodService.onShowInputRequested refuses implicit
-         * requests while a hard keyboard is attached. */
-        boolean shown = imm.showSoftInput(hiddenInput, 0);
-        Log.i(TAG, "win " + id + ": ime show requestFocus=" + focused + " showSoftInput=" + shown
-                + " type=0x" + Integer.toHexString(hiddenInput.getInputType()));
+        /*
+         * requestFocus() changes View focus synchronously, while
+         * InputMethodManager updates its served-view bookkeeping later on the
+         * UI queue. Defer the show by one turn and refresh the connection only
+         * when Android has not activated this editor yet.
+         */
+        hiddenInput.post(() -> {
+            if (!imeWanted || !hasWindowFocus() || imm == null) return;
+            boolean activeBefore = imm.isActive(hiddenInput);
+            if (!activeBefore)
+                imm.restartInput(hiddenInput);
+            /* Explicit flags=0: the Wayland client requested the panel. */
+            boolean shown = imm.showSoftInput(hiddenInput, 0);
+            Log.i(TAG, "win " + id + ": ime show requestFocus=" + focused
+                    + " activeBefore=" + activeBefore
+                    + " activeAfter=" + imm.isActive(hiddenInput)
+                    + " accepting=" + imm.isAcceptingText()
+                    + " showSoftInput=" + shown
+                    + " type=0x" + Integer.toHexString(hiddenInput.getInputType()));
+        });
     }
 
     private void onImeHide() {
@@ -786,12 +806,11 @@ public class AwlWindowActivity extends Activity {
         imeWanted = false;
         if (imm != null)
             imm.hideSoftInputFromWindow(hiddenInput.getWindowToken(), 0);
-        if (hiddenInput.isEnabled()) {
-            hiddenInput.clearFocus();
-            hiddenInput.setFocusable(false);
-            hiddenInput.setFocusableInTouchMode(false);
-            hiddenInput.setEnabled(false);
-        }
+        /*
+         * Hiding the soft keyboard is sufficient. Keep the editor focusable
+         * and serviceable so a fast Wayland re-enter reuses a valid Android
+         * InputConnection instead of racing a new served-view handoff.
+         */
     }
 
     /** Editor state pushed by the daemon (the client's set_surrounding/cursor_rect take effect with the commit) */
