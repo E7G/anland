@@ -1058,8 +1058,21 @@ public class AwlWindowActivity extends Activity {
         @Override
         public boolean finishComposingText() {
             if (!compText.isEmpty()) {
-                AwlClient.ime(id, AwlClient.IME_PREEDIT, 0, 0, "");
-                clearComposing();
+                /*
+                 * Android's finishComposingText() keeps the composing text in
+                 * the editor and merely removes the composing span.  Our
+                 * virtual editor stores composition outside surText, so
+                 * clearing PREEDIT here would discard the candidate entirely.
+                 * Promote the current preedit to committed text instead.
+                 */
+                String t = compText;
+                AwlClient.ime(id, AwlClient.IME_COMMIT, 0, 0, t);
+                int c = Math.min(surCursor, surText.length());
+                surText = surText.substring(0, c) + t + surText.substring(c);
+                surCursor = surAnchor = c + t.length();
+                compText = "";
+                compCursor = 0;
+                notifyImeState();
             }
             return true;
         }
