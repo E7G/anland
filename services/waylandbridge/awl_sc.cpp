@@ -114,6 +114,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <map>
 #include <memory>
@@ -436,6 +437,10 @@ static std::atomic<bool> g_running{false};
 static std::thread g_render_th;
 static std::atomic<ALooper*> g_lo{nullptr};
 static AChoreographer* g_ch = nullptr;
+static std::mutex g_start_state_lock;
+static std::condition_variable g_start_state_cv;
+static bool g_start_done = false;
+static bool g_start_ok = false;
 
 /* the render thread's GLES context (EGL-mode layers); created on first need */
 static struct {
@@ -1036,14 +1041,23 @@ static void sc_frame64_cb(int64_t, void*) {
 }
 
 static void sc_render_thread(void) {
-    g_lo.store(ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS));
+    ALooper* lo = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
+    g_lo.store(lo);
     g_ch = AChoreographer_getInstance();
-    if (!g_ch) {
-        /* infra failure (e.g. the SF event connection refused — the sepolicy
-         * rule set must carry surfaceflinger find + binder call, see
-         * module/sepolicy.rule). Loud and dead: no transactions can ever be
-         * paced; the daemon stays alive for the GL path via sc_enabled=0. */
-        LOGE("AChoreographer_getInstance failed — SC render thread exiting "
+    {
+        std::lock_guard<std::mutex> lk(g_start_state_lock);
+        g_start_ok = lo && g_ch;
+        g_start_done = true;
+    }
+    g_start_state_cv.notify_all();
+    if (!lo || !g_ch) {
+        /* Infra failure: never leave a stale thread-local ALooper published.
+         * ALooper_wake on it after this thread exits aborts libutils because
+         * its wake fd has already been closed. threads_start() observes this
+         * failure synchronously so the caller can fall back to the GL backend. */
+        g_lo.store(nullptr);
+        g_running.store(false);
+        LOGE("SC render-thread init failed — unavailable; use GL fallback "
              "(check awl_daemon → surfaceflinger sepolicy rules)");
         return;
     }
@@ -1068,13 +1082,27 @@ static void sc_render_thread(void) {
     LOGI("SC render thread exiting");
 }
 
-static void threads_start(void) {
+static bool threads_start(void) {
     static std::mutex start_lock;
     std::lock_guard<std::mutex> lk(start_lock);
-    if (g_running.load()) return;
+    if (g_running.load()) return true;
+    if (g_render_th.joinable()) g_render_th.join();
     api_init();
+    {
+        std::lock_guard<std::mutex> slk(g_start_state_lock);
+        g_start_done = false;
+        g_start_ok = false;
+    }
     g_running.store(true);
     g_render_th = std::thread(sc_render_thread);
+    bool ok = false;
+    {
+        std::unique_lock<std::mutex> slk(g_start_state_lock);
+        g_start_state_cv.wait(slk, [] { return g_start_done; });
+        ok = g_start_ok;
+    }
+    if (!ok && g_render_th.joinable()) g_render_th.join();
+    return ok;
 }
 
 /* ---------------- public API ---------------- */
@@ -1117,7 +1145,11 @@ int awl_sc_attach(uint64_t id, ANativeWindow* nw) {
     sc_detach_internal(id);
     if (!nw) return 0;
 
-    threads_start();
+    if (!threads_start()) {
+        LOGE("window %llu: SC init failed; caller should fall back to GL",
+             (unsigned long long)id);
+        return -1;
+    }
     ANativeWindow_acquire(nw);
     auto w = std::make_shared<sc_window>();
     w->id = id;

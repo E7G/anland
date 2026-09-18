@@ -81,8 +81,15 @@ static int backend_attach(uint64_t id, ANativeWindow* nw) {
     awl_renderer_attach(id, nullptr);
     awl_sc_attach(id, nullptr);
     if (!nw) return 0;
-    return g_cfg_sc.load(std::memory_order_relaxed) ? awl_sc_attach(id, nw)
-                                                    : awl_renderer_attach(id, nw);
+    if (g_cfg_sc.load(std::memory_order_relaxed)) {
+        int rc = awl_sc_attach(id, nw);
+        if (rc == 0) return 0;
+        __android_log_print(ANDROID_LOG_ERROR, "anland-daemon",
+                            "window %llu: SC backend unavailable; falling back to GL renderer",
+                            (unsigned long long)id);
+        return awl_renderer_attach(id, nw);
+    }
+    return awl_renderer_attach(id, nw);
 }
 static void backend_request_render(uint64_t id) {
     awl_sc_sync(id);                    /* SC-attached window (unknown id = no-op) */
