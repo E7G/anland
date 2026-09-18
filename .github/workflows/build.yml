@@ -86,6 +86,24 @@ jobs:
           path: app/debug.keystore
           key: anland-debug-keystore-v1
 
+      - name: Prepare release signing key
+        env:
+          RELEASE_KEYSTORE_B64: ${{ secrets.ANLAND_RELEASE_KEYSTORE_B64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.ANLAND_RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.ANLAND_RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.ANLAND_RELEASE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$RELEASE_KEYSTORE_B64" ]; then
+            printf '%s' "$RELEASE_KEYSTORE_B64" | base64 -d > app/e7g-anland-release.jks
+            echo "ANLAND_RELEASE_STORE_FILE=$GITHUB_WORKSPACE/app/e7g-anland-release.jks" >> "$GITHUB_ENV"
+            echo "ANLAND_RELEASE_STORE_PASSWORD=$RELEASE_STORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANLAND_RELEASE_KEY_ALIAS=$RELEASE_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "ANLAND_RELEASE_KEY_PASSWORD=$RELEASE_KEY_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANLAND_RELEASE_SIGNING=1" >> "$GITHUB_ENV"
+          else
+            echo "Release signing secrets unavailable; using debug fallback."
+          fi
+
       - uses: gradle/actions/setup-gradle@v4
 
       - name: libffi (one-time cross-compile bootstrap)
@@ -93,6 +111,14 @@ jobs:
 
       - name: Build (native + apk + module)
         run: make
+
+      - name: Verify release certificate
+        if: env.ANLAND_RELEASE_SIGNING == '1'
+        run: |
+          CERT="$("$ANDROID_HOME/build-tools/$BT_VERSION/apksigner" verify --print-certs build/anland-wayland.apk \
+            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
+          echo "APK certificate SHA-256: $CERT"
+          test "$CERT" = "e190d6952f51fd1f100cab19f3d2b3528329eedfc295103d174a15b4aa7729e9"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

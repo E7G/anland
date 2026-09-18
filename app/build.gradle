@@ -2,7 +2,8 @@
 // APK — all rendering/protocol lives in the root daemon (waylandbridge), so
 // there are no dependencies and no native libs. Signing uses debug.keystore
 // (gitignored; the Makefile bootstraps it with keytool when missing) so
-// release APKs stay installable over previous dev builds.
+// release APKs use the repository release key when ANLAND_RELEASE_* is set;
+// local/PR builds fall back to the generated debug keystore.
 plugins {
     id 'com.android.application' version '9.4.0'
 }
@@ -26,10 +27,18 @@ android {
 
     signingConfigs {
         release {
-            storeFile file('debug.keystore')
-            storePassword 'anland'
-            keyAlias 'anland'
-            keyPassword 'anland'
+            def releaseStoreFile = System.getenv('ANLAND_RELEASE_STORE_FILE')
+            if (releaseStoreFile) {
+                storeFile file(releaseStoreFile)
+                storePassword System.getenv('ANLAND_RELEASE_STORE_PASSWORD')
+                keyAlias System.getenv('ANLAND_RELEASE_KEY_ALIAS')
+                keyPassword System.getenv('ANLAND_RELEASE_KEY_PASSWORD')
+            } else {
+                storeFile file('debug.keystore')
+                storePassword 'anland'
+                keyAlias 'anland'
+                keyPassword 'anland'
+            }
         }
     }
 

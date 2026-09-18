@@ -100,13 +100,14 @@ native-debug: check-tools
 
 # ---------------- APK + third-party AAR (gradle: app/ → AGP, artifacts collected into build/) ----------------
 # Pure-Java APK: rendering/protocol all live in the root daemon — no
-# dependencies, no native libs. Signed with app/debug.keystore (gitignored;
+# dependencies, no native libs. CI/release builds use ANLAND_RELEASE_* when
+# configured; local/PR builds fall back to app/debug.keystore (gitignored,
 # bootstrapped here with keytool when missing).
 # :libawl = third-party client library (wayland fd / window list / events /
 # window hosting) — published as build/anland-awllib.aar.
 apk: check-tools
 	KS=app/debug.keystore
-	if [ ! -f "$$KS" ]; then
+	if [ -z "${ANLAND_RELEASE_STORE_FILE:-}" ] && [ ! -f "$KS" ]; then
 	  "$(JAVA)/keytool" -genkeypair -keystore "$$KS" -alias anland \
 	    -storepass anland -keypass anland -keyalg RSA -keysize 2048 \
 	    -validity 10000 -dname "CN=Anland Debug" >/dev/null 2>&1
